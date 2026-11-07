@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-07
+
+### Fixed
+
+- Agent log scope rule: edits under `/tmp` were always ignored, so a project inside `/tmp` was never checked. `/tmp` is now ignored only outside the project. This also fixes the Linux CI run.
+- `tests/run.sh`: replaced `ls | grep` with `find` (shellcheck SC2010).
+
 ## [0.1.0] - 2026-11-07
 
 ### Added
@@ -25,5 +32,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/IbrahimHosseini/agentkit/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/IbrahimHosseini/agentkit/releases/tag/v0.1.0
