@@ -1,5 +1,10 @@
 # agentkit
 
+[![CI](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/IbrahimHosseini/agentkit)](https://github.com/IbrahimHosseini/agentkit/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/IbrahimHosseini/agentkit)](LICENSE)
+![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+
 agentkit is a shared pack of Claude Code agents for a team. It has 16 agents, three skills, a CLAUDE.md workflow block and a hook that logs agent mistakes. One command installs it. One command updates it.
 
 The agents follow one workflow. A supervisor plans the work. You approve the plan. Workers do the parts. The supervisor reviews the result. The hook records when an agent breaks a rule, so the team can improve the agent files.
