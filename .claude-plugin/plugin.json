@@ -1,0 +1,11 @@
+{
+  "name": "agentkit",
+  "version": "0.1.0",
+  "description": "A shareable pack of Claude Code agents, skills and an agent-log hook for a team.",
+  "author": {
+    "name": "Ibrahim Hosseini"
+  },
+  "homepage": "https://github.com/IbrahimHosseini/agentkit",
+  "repository": "https://github.com/IbrahimHosseini/agentkit",
+  "license": "MIT"
+}

@@ -1,0 +1,864 @@
+#!/usr/bin/env bash
+# agentkit: install and update a shared pack of Claude Code agents and skills.
+# bash 3.2 compatible. JSON and CLAUDE.md edits use python3 -I (stdlib only).
+
+set -u
+
+# ---------------------------------------------------------------- python helper
+IFS= read -r -d '' PYLIB <<'PY'
+import hashlib, json, os, re, sys
+
+START = '<!-- agentkit:start -->'
+END = '<!-- agentkit:end -->'
+
+
+def rd(p):
+    try:
+        with open(p, encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def wr(p, s):
+    p = os.path.realpath(p)  # never replace a symlink, write through it
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + '.agentkit-tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(s)
+    if os.path.exists(p):
+        os.chmod(tmp, os.stat(p).st_mode & 0o7777)
+    os.replace(tmp, p)
+
+
+def load_settings(p):
+    s = rd(p)
+    if s is None or not s.strip():
+        return {}
+    d = json.loads(s)
+    if not isinstance(d, dict):
+        raise ValueError('not a JSON object')
+    return d
+
+
+def dump(d):
+    return json.dumps(d, indent=2, ensure_ascii=False) + '\n'
+
+
+PATTERNS = {
+    'agentkit-agent-log': re.compile(r'hooks/agent-log\.pycheck'),
+    'agentkit-auto-update': re.compile(r'/hooks/update-check\.sh$'),
+}
+
+
+def norm(cmd):
+    return re.sub(r'["\'\s]+', '', str(cmd))
+
+
+def is_ours(g, source):
+    """Marked with source, or unmarked and every inner command matches our command."""
+    if not isinstance(g, dict):
+        return False
+    if g.get('_agentkit_source') == source:
+        return True
+    if '_agentkit_source' in g or source not in PATTERNS:
+        return False
+    inner = g.get('hooks')
+    if not isinstance(inner, list) or not inner:
+        return False
+    return all(isinstance(h, dict) and h.get('type') == 'command' and PATTERNS[source].search(norm(h.get('command', '')))
+               for h in inner)
+
+
+def entry(source, command, timeout):
+    return {'hooks': [{'type': 'command', 'command': command, 'timeout': int(timeout)}],
+            '_agentkit_source': source}
+
+
+def main(a):
+    c = a[0]
+    if c == 'hook-show':
+        print(dump({'hooks': {a[1]: [entry(a[2], a[3], a[4])]}}), end='')
+    elif c == 'hook-add':
+        path, event, source, command, timeout, mode = a[1:7]
+        refresh = len(a) > 7 and a[7] == 'refresh'  # only touch entries that already carry our marker
+        d = load_settings(path)
+        hooks = d.setdefault('hooks', {})
+        lst = hooks.setdefault(event, [])
+        new = entry(source, command, timeout)
+        idx = [i for i, g in enumerate(lst) if is_ours(g, source)]
+        if refresh:
+            idx = [i for i in idx if lst[i].get('_agentkit_source') == source]
+            if not idx:
+                print('unchanged')
+                return
+        if idx and len(idx) == 1 and lst[idx[0]] == new:
+            status = 'unchanged'
+        elif idx:
+            lst[idx[0]] = new
+            for i in reversed(idx[1:]):  # drop duplicates of our own entry
+                del lst[i]
+            status = 'updated'
+        else:
+            lst.append(new)
+            status = 'added'
+        if mode == 'write' and status != 'unchanged':
+            wr(path, dump(d))
+        print(status)
+    elif c == 'hook-remove':
+        path, prefix, mode = a[1:4]
+        d = load_settings(path)
+        n = 0
+        hooks = d.get('hooks')
+        if isinstance(hooks, dict):
+            for ev in list(hooks):
+                lst = hooks[ev]
+                if not isinstance(lst, list):
+                    continue
+                keep = [g for g in lst if not (isinstance(g, dict) and str(g.get('_agentkit_source', '')).startswith(prefix))]
+                n += len(lst) - len(keep)
+                if len(keep) != len(lst):
+                    if keep:
+                        hooks[ev] = keep
+                    else:
+                        del hooks[ev]
+            if not hooks and n:
+                del d['hooks']
+        if mode == 'write' and n:
+            wr(path, dump(d))
+        print(n)
+    elif c == 'hook-has':
+        d = load_settings(a[1])
+        for lst in (d.get('hooks') or {}).values():
+            for g in lst if isinstance(lst, list) else []:
+                if isinstance(g, dict) and g.get('_agentkit_source') == a[2]:
+                    sys.exit(0)
+        sys.exit(1)
+    elif c == 'hook-old':
+        d = load_settings(a[1])
+        for g in (d.get('hooks') or {}).get(a[2]) or []:
+            if is_ours(g, a[3]):
+                print(json.dumps(g, indent=2, ensure_ascii=False))
+    elif c == 'export-has-groups':
+        try:
+            sys.exit(0 if json.loads(rd(a[1]) or '{}').get('groups') else 1)
+        except ValueError:
+            sys.exit(1)
+    elif c == 'heading-outside':
+        s = rd(a[1]) or ''
+        s = re.sub(re.escape(START) + r'.*?' + re.escape(END), '', s, flags=re.S)
+        sys.exit(0 if re.search(r'(?m)^#\s+Multi-agent workflow', s) else 1)
+    elif c == 'block-has':
+        sys.exit(0 if START in (rd(a[1]) or '') else 1)
+    elif c == 'block-put':
+        path, snip, mode = a[1:4]
+        s = rd(path) or ''
+        block = START + '\n' + (rd(snip) or '').rstrip('\n') + '\n' + END
+        m = re.search(re.escape(START) + r'.*?' + re.escape(END), s, re.S)
+        if m:
+            new = s[:m.start()] + block + s[m.end():]
+            status = 'replaced' if new != s else 'unchanged'
+        elif START in s or END in s:
+            raise ValueError('only one agentkit marker found; fix the file by hand')
+        else:
+            new = (s.rstrip('\n') + '\n\n' if s.strip() else '') + block + '\n'
+            status = 'added'
+        if mode == 'write' and status != 'unchanged':
+            wr(path, new)
+        print(status)
+    elif c == 'block-del':
+        path, mode = a[1:3]
+        s = rd(path) or ''
+        m = re.search(re.escape(START) + r'.*?' + re.escape(END), s, re.S)
+        if not m:
+            print('none')
+            return
+        before, after = s[:m.start()].rstrip('\n'), s[m.end():].lstrip('\n')
+        new = before + ('\n\n' if before and after else '') + after
+        new = new + '\n' if new else ''
+        status = 'removed' if new.strip() else 'removed-empty'
+        if mode == 'write':
+            if new.strip():
+                wr(path, new)
+            else:
+                os.unlink(os.path.realpath(path))
+        print(status)
+    elif c == 'mf-read':
+        d = json.loads(rd(a[1]) or '{}')
+        for k, v in sorted((d.get('files') or {}).items()):
+            print(k + '\t' + v)
+    elif c == 'mf-version':
+        print(json.loads(rd(a[1]) or '{}').get('agentkit_version', ''))
+    elif c == 'mf-write':
+        path, version, tsv = a[1:4]
+        files = {}
+        for line in (rd(tsv) or '').splitlines():
+            k, _, v = line.partition('\t')
+            if k:
+                files[k] = v
+        out = dump({'agentkit_version': version, 'files': dict(sorted(files.items()))})
+        if rd(path) != out:
+            wr(path, out)
+    else:
+        sys.exit('unknown helper command: ' + c)
+
+
+try:
+    main(sys.argv[1:])
+except (ValueError, OSError) as e:
+    sys.exit('error: ' + str(e))
+PY
+
+py() { python3 -I -c "$PYLIB" "$@"; }
+
+# ---------------------------------------------------------------- helpers
+say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+dry() { say "[dry-run] $*"; }
+skipped() { case "$SKIPS" in *" $1 "*) return 0 ;; esac; return 1; }
+
+QUIET=0 DRY=0 YES=0 FORCE=0 PURGE=0 PROJECT="" SKIPS=" "
+TS="$(date +%Y%m%d-%H%M%S)"
+WORK=""
+cleanup() { if [ -n "$WORK" ] && [ -d "$WORK" ]; then rm -rf "${WORK:?}"; fi; }
+trap cleanup EXIT
+# One work dir per run, made in the main shell, removed on exit. Not made for 'log' (it uses exec).
+init_work() {
+  [ -n "$WORK" ] && return 0
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/agentkit.XXXXXX")" || die "mktemp failed"
+}
+mktmp() { mktemp "$WORK/f.XXXXXX"; }
+
+if command -v sha256sum > /dev/null 2>&1; then
+  sha() { sha256sum "$1" | cut -d' ' -f1; }
+else
+  sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
+fi
+
+# Resolve where agentkit lives.
+resolve_home() {
+  if [ -n "${AGENTKIT_HOME:-}" ]; then return; fi
+  local src="${BASH_SOURCE[0]}" d
+  while [ -L "$src" ]; do
+    d="$(cd "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) ;; *) src="$d/$src" ;; esac
+  done
+  d="$(cd "$(dirname "$src")/.." 2> /dev/null && pwd)"
+  if [ -n "$d" ] && [ -f "$d/VERSION" ] && [ -d "$d/agents" ]; then
+    AGENTKIT_HOME="$d"
+  else
+    AGENTKIT_HOME="$HOME/.agentkit"
+  fi
+}
+resolve_home
+AGENTKIT_REPO="${AGENTKIT_REPO:-https://github.com/IbrahimHosseini/agentkit.git}"
+CLAUDE_HOME="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+VERSION_FILE="$AGENTKIT_HOME/VERSION"
+version() {
+  if [ -f "$VERSION_FILE" ]; then tr -d '[:space:]' < "$VERSION_FILE"; else echo unknown; fi
+}
+
+# y/N prompt. --yes answers yes. No tty and no --yes: answer no and say so.
+ask() {
+  local ans
+  [ "$YES" = 1 ] && return 0
+  if { : < /dev/tty; } 2> /dev/null; then
+    printf '%s [y/N] ' "$1" > /dev/tty
+    read -r ans < /dev/tty
+    case "$ans" in y | Y | yes | YES) return 0 ;; esac
+    return 1
+  fi
+  say "No terminal, skipped: $1 (use --yes to accept)"
+  return 1
+}
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) [ $# -ge 2 ] || die "--project needs a directory"; PROJECT="$2"; shift ;;
+      --project=*) PROJECT="${1#--project=}" ;;
+      --dry-run) DRY=1 ;;
+      --yes | -y) YES=1 ;;
+      --force) FORCE=1 ;;
+      --quiet) QUIET=1 ;;
+      --purge) PURGE=1 ;;
+      --skip)
+        [ $# -ge 2 ] || die "--skip needs a value"
+        add_skip "$2"; shift ;;
+      --skip=*) add_skip "${1#--skip=}" ;;
+      *) die "unknown option: $1 (see: agentkit help)" ;;
+    esac
+    shift
+  done
+}
+add_skip() {
+  case "$1" in gstack | karpathy | claude-md | hooks | skills) SKIPS="$SKIPS$1 " ;; *) die "--skip: unknown step '$1' (gstack|karpathy|claude-md|hooks|skills)" ;; esac
+}
+
+need_python() {
+  python3 -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2> /dev/null || die "python3 >= 3.9 is required"
+}
+
+resolve_target() {
+  init_work
+  if [ -n "$PROJECT" ]; then
+    [ -d "$PROJECT" ] || die "project directory not found: $PROJECT"
+    PROJECT="$(cd "$PROJECT" && pwd)"
+    TARGET="$PROJECT/.claude"
+    CLAUDE_MD="$PROJECT/CLAUDE.md"
+  else
+    TARGET="$CLAUDE_HOME"
+    CLAUDE_MD="$CLAUDE_HOME/CLAUDE.md"
+  fi
+  SETTINGS="$TARGET/settings.json"
+  STATE="$TARGET/agentkit"
+  MANIFEST="$STATE/manifest.json"
+  BACKUP_DIR="$STATE/backups/$TS"
+}
+
+# Back up a file or symlink into the state dir before it is changed or removed.
+backup() {
+  local f="$1" rel dest
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  case "$f" in "$TARGET"/*) rel="${f#"$TARGET"/}" ;; "$PROJECT"/*) rel="${f#"$PROJECT"/}" ;; *) rel="$(basename "$f")" ;; esac
+  dest="$BACKUP_DIR/$rel"
+  if [ "$DRY" = 1 ]; then dry "back up $f -> $dest"; return 0; fi
+  mkdir -p "$(dirname "$dest")" && cp -PpR "$f" "$dest" || die "backup of $f failed"
+}
+
+# ---------------------------------------------------------------- file sync
+N_ADDED=0 N_UPDATED=0 N_SAME=0 N_KEPT=0 N_SKIPPED=0 N_REMOVED=0 N_FORCED=0
+NEW_FILES="" SKIP_LIST="" KEPT_LIST=""
+
+old_hash() { awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$MF_OLD"; }
+record() { printf '%s\t%s\n' "$1" "$2" >> "$MF_NEW"; }
+
+put_file() { # src dest
+  if [ "$DRY" = 1 ]; then dry "copy ${2#"$TARGET"/}"; return 0; fi
+  mkdir -p "$(dirname "$2")" || die "cannot create $(dirname "$2")"
+  if [ -L "$2" ]; then rm -f "$2"; fi
+  cp -p "$1" "$2" || die "copy to $2 failed"
+}
+
+apply_file() { # rel src
+  local rel="$1" src="$2" dest="$TARGET/$1" s_src mh cur
+  s_src="$(sha "$src")"
+  mh="$(old_hash "$rel")"
+  echo "$rel" >> "$SRC_LIST"
+  if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+    if [ -n "$mh" ] && [ "$MODE" = update ]; then
+      say "  kept removed: $rel (you deleted it)"
+      record "$rel" "$mh"
+      return
+    fi
+    put_file "$src" "$dest"; record "$rel" "$s_src"; N_ADDED=$((N_ADDED + 1))
+    return
+  fi
+  cur="$(sha "$dest")"
+  if [ "$cur" = "$s_src" ] && { [ -n "$mh" ] || [ ! -L "$dest" ]; }; then
+    record "$rel" "$s_src"; N_SAME=$((N_SAME + 1))
+    return
+  fi
+  if [ -n "$mh" ]; then
+    if [ "$cur" = "$mh" ]; then
+      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_UPDATED=$((N_UPDATED + 1))
+    elif [ "$FORCE" = 1 ]; then
+      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_FORCED=$((N_FORCED + 1))
+    else
+      if [ "$DRY" = 1 ]; then dry "write $rel.agentkit-new (you edited $rel)"; else cp -p "$src" "$dest.agentkit-new"; fi
+      record "$rel" "$mh"; N_KEPT=$((N_KEPT + 1))
+      NEW_FILES="$NEW_FILES $dest.agentkit-new"
+      say "  kept your edited $rel; new version in $rel.agentkit-new"
+    fi
+  else
+    if [ "$FORCE" = 1 ]; then
+      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_FORCED=$((N_FORCED + 1))
+    else
+      warn "$rel exists and is not managed by agentkit; skipped (use --force to replace, with backup)"
+      N_SKIPPED=$((N_SKIPPED + 1)); SKIP_LIST="$SKIP_LIST $rel"
+    fi
+  fi
+}
+
+# Is a whole skill folder identical to the source? (adopt it without warning)
+skill_identical() { # name
+  local f rel
+  while IFS= read -r f; do
+    rel="${f#"$AGENTKIT_HOME"/}"
+    [ -f "$TARGET/$rel" ] && [ ! -L "$TARGET/$rel" ] && [ "$(sha "$f")" = "$(sha "$TARGET/$rel")" ] || return 1
+  done < "$1"
+  return 0
+}
+
+apply_skill() { # name
+  local n="$1" dir="$TARGET/skills/$1" list f rel
+  list="$(mktmp)"
+  find "$AGENTKIT_HOME/skills/$n" -type f ! -name .DS_Store ! -name '*.pyc' | sort > "$list"
+  # A symlinked skill folder is never ours, never written through. A real folder that agentkit
+  # did not install is foreign too, unless it is identical to the source.
+  if [ -L "$dir" ] || { [ -e "$dir" ] && ! grep -q "^skills/$n/" "$MF_OLD" 2> /dev/null; }; then
+    if [ ! -L "$dir" ] && skill_identical "$list"; then
+      :
+    elif [ "$FORCE" = 1 ]; then
+      backup "$dir"
+      if [ "$DRY" = 1 ]; then dry "replace skills/$n"; elif [ -L "$dir" ]; then rm -f "$dir"; else rm -rf "${dir:?}"; fi
+      N_FORCED=$((N_FORCED + 1))
+    else
+      if [ -L "$dir" ]; then warn "skills/$n is a symlink; skipped (use --force to replace the link, with backup)"; else warn "skills/$n exists and is not managed by agentkit; skipped (use --force to replace, with backup)"; fi
+      N_SKIPPED=$((N_SKIPPED + 1)); SKIP_LIST="$SKIP_LIST skills/$n"
+      while IFS= read -r f; do echo "${f#"$AGENTKIT_HOME"/}" >> "$SRC_LIST"; done < "$list"
+      awk -F'\t' -v p="skills/$n/" 'index($1, p) == 1' "$MF_OLD" >> "$MF_NEW"
+      return
+    fi
+  fi
+  while IFS= read -r f; do
+    rel="${f#"$AGENTKIT_HOME"/}"
+    apply_file "$rel" "$f"
+  done < "$list"
+}
+
+# Remove files that were installed earlier and are gone upstream, if unchanged.
+prune_removed() {
+  local rel mh dest cat
+  while IFS="$(printf '\t')" read -r rel mh; do
+    [ -n "$rel" ] || continue
+    grep -qxF "$rel" "$SRC_LIST" && continue
+    cat="${rel%%/*}"
+    if { [ "$cat" = skills ] && skipped skills; } || { [ "$cat" = agents ] && skipped agents; }; then
+      record "$rel" "$mh"; continue
+    fi
+    dest="$TARGET/$rel"
+    [ -e "$dest" ] || [ -L "$dest" ] || continue
+    if [ ! -L "$dest" ] && [ "$(sha "$dest")" = "$mh" ]; then
+      if [ "$DRY" = 1 ]; then dry "remove $rel (removed upstream)"; else rm -f "$dest"; fi
+      N_REMOVED=$((N_REMOVED + 1))
+    else
+      say "  kept $rel (removed upstream, but you edited it)"
+      KEPT_LIST="$KEPT_LIST $rel"
+    fi
+  done < "$MF_OLD"
+}
+
+apply_all() { # MODE=install|update
+  local f n
+  MF_OLD="$(mktmp)"; MF_NEW="$(mktmp)"; SRC_LIST="$(mktmp)"
+  [ -f "$MANIFEST" ] && py mf-read "$MANIFEST" > "$MF_OLD"
+  for f in "$AGENTKIT_HOME"/agents/*.md; do
+    [ -f "$f" ] || continue
+    apply_file "agents/$(basename "$f")" "$f"
+  done
+  if ! skipped skills; then
+    for f in "$AGENTKIT_HOME"/skills/*/; do
+      [ -d "$f" ] || continue
+      n="$(basename "$f")"
+      [ -f "$f/SKILL.md" ] || continue
+      apply_skill "$n"
+    done
+  else
+    while IFS="$(printf '\t')" read -r n f; do
+      case "$n" in skills/*) record "$n" "$f"; echo "$n" >> "$SRC_LIST" ;; esac
+    done < "$MF_OLD"
+  fi
+  prune_removed
+}
+
+write_manifest() {
+  if [ "$DRY" = 1 ]; then dry "write manifest $MANIFEST"; return; fi
+  mkdir -p "$STATE" || die "cannot create $STATE"
+  py mf-write "$MANIFEST" "$(version)" "$MF_NEW" || die "cannot write manifest"
+}
+
+summary() {
+  say ""
+  say "Files: $N_ADDED added, $N_UPDATED updated, $N_SAME unchanged, $N_FORCED replaced (--force), $N_REMOVED removed upstream"
+  if [ "$N_KEPT" -gt 0 ]; then
+    say "Kept $N_KEPT edited file(s). New versions are next to them:"
+    for f in $NEW_FILES; do say "  $f"; done
+  fi
+  if [ "$N_SKIPPED" -gt 0 ]; then say "Skipped $N_SKIPPED file(s) or folder(s) that agentkit does not manage:$SKIP_LIST"; fi
+  if [ -n "$KEPT_LIST" ]; then say "Removed upstream but kept because you edited them:$KEPT_LIST"; fi
+  return 0
+}
+
+# ---------------------------------------------------------------- CLAUDE.md
+step_claude_md() { # mode: install (ask) | update (only if block present)
+  local snip="$AGENTKIT_HOME/templates/CLAUDE.md.snippet" st dup
+  skipped claude-md && { say "CLAUDE.md: skipped (--skip claude-md)"; return; }
+  [ -f "$snip" ] || { warn "template missing: $snip"; return; }
+  if [ "$1" = update ]; then
+    py block-has "$CLAUDE_MD" 2> /dev/null || return 0
+  fi
+  st="$(py block-put "$CLAUDE_MD" "$snip" check)" || { warn "cannot edit $CLAUDE_MD"; return; }
+  if [ "$st" = unchanged ]; then say "CLAUDE.md: block already up to date"; return; fi
+  if [ "$1" = install ]; then
+    dup=""
+    if py heading-outside "$CLAUDE_MD" 2> /dev/null; then
+      dup="WARNING: $CLAUDE_MD already has a '# Multi-agent workflow' section outside the agentkit markers; the block would duplicate it. "
+      say "$dup"
+    fi
+    if [ "$DRY" = 1 ]; then dry "CLAUDE.md: $st agentkit block in $CLAUDE_MD"; return; fi
+    ask "${dup}Insert the agentkit workflow block into $CLAUDE_MD ($st)?" || { say "CLAUDE.md: skipped"; return; }
+  elif [ "$DRY" = 1 ]; then dry "CLAUDE.md: $st agentkit block"; return
+  fi
+  backup "$CLAUDE_MD"
+  py block-put "$CLAUDE_MD" "$snip" write > /dev/null || { warn "cannot edit $CLAUDE_MD"; return; }
+  say "CLAUDE.md: $st block in $CLAUDE_MD"
+}
+
+# ---------------------------------------------------------------- settings.json hooks
+# hook_apply EVENT SOURCE COMMAND TIMEOUT QUESTION
+hook_apply() {
+  local st
+  st="$(py hook-add "$SETTINGS" "$1" "$2" "$3" "$4" check)" || { warn "cannot read $SETTINGS (invalid JSON?); hook not added"; return 1; }
+  if [ "$st" = unchanged ]; then say "settings.json: $2 already present"; return 0; fi
+  say "settings.json: $st this entry in $SETTINGS:"
+  if [ "$st" = updated ]; then
+    say "  It replaces this existing entry:"
+    py hook-old "$SETTINGS" "$1" "$2" | sed 's/^/    /'
+    say "  with:"
+  fi
+  py hook-show "$1" "$2" "$3" "$4" | sed 's/^/    /'
+  if [ "$DRY" = 1 ]; then dry "settings.json: $st $2"; return 0; fi
+  ask "$5" || { say "settings.json: skipped"; return 1; }
+  backup "$SETTINGS"
+  py hook-add "$SETTINGS" "$1" "$2" "$3" "$4" write > /dev/null || { warn "cannot write $SETTINGS"; return 1; }
+  say "settings.json: $2 $st"
+}
+
+hook_remove() { # prefix
+  local n
+  [ -f "$SETTINGS" ] || return 0
+  n="$(py hook-remove "$SETTINGS" "$1" check)" || { warn "cannot read $SETTINGS; hook entries left"; return 0; }
+  [ "$n" -gt 0 ] || return 0
+  if [ "$DRY" = 1 ]; then dry "settings.json: remove $n entr(y/ies) marked $1*"; return 0; fi
+  backup "$SETTINGS"
+  py hook-remove "$SETTINGS" "$1" write > /dev/null || { warn "cannot write $SETTINGS"; return 0; }
+  say "settings.json: removed $n entr(y/ies) marked $1*"
+}
+
+AGENTLOG_CMD() { printf 'python3 -I "%s/hooks/agent-log.py" check || true' "$AGENTKIT_HOME"; }
+
+step_hooks() {
+  skipped hooks && { say "hooks: skipped (--skip hooks)"; return; }
+  hook_apply SubagentStop agentkit-agent-log "$(AGENTLOG_CMD)" 20 "Add the SubagentStop agent-log hook to $SETTINGS?"
+}
+
+# ---------------------------------------------------------------- dependencies
+step_gstack() {
+  local gs="$CLAUDE_HOME/skills/gstack" url=https://github.com/garrytan/gstack.git
+  skipped gstack && { say "gstack: skipped (--skip gstack)"; return; }
+  if [ -e "$gs" ]; then say "gstack: already installed ($gs)"; return; fi
+  local cmd="git clone --single-branch --depth 1 $url $gs && cd $gs && ./setup"
+  if [ "$DRY" = 1 ]; then dry "gstack: $cmd"; return; fi
+  ask "Install gstack (git clone, then its ./setup, needs git and bun)?" || { say "gstack: skipped. Manual: $cmd"; return; }
+  command -v git > /dev/null 2>&1 || { warn "gstack: git not found. Manual: $cmd"; return; }
+  command -v bun > /dev/null 2>&1 || { warn "gstack: bun not found (https://bun.sh). Manual: $cmd"; return; }
+  mkdir -p "$(dirname "$gs")"
+  git clone --single-branch --depth 1 "$url" "$gs" || { warn "gstack: clone failed"; return; }
+  (cd "$gs" && ./setup) || warn "gstack: ./setup failed; run it by hand in $gs"
+}
+
+step_karpathy() {
+  local m="https://github.com/forrestchang/andrej-karpathy-skills.git" p="andrej-karpathy-skills@karpathy-skills"
+  skipped karpathy && { say "karpathy: skipped (--skip karpathy)"; return; }
+  if ! command -v claude > /dev/null 2>&1; then
+    say "karpathy: claude CLI not found. Run later:"
+    say "  claude plugin marketplace add $m && claude plugin install $p"
+    return
+  fi
+  if claude plugin list 2> /dev/null | grep -q 'andrej-karpathy-skills'; then say "karpathy: plugin already installed"; return; fi
+  if [ "$DRY" = 1 ]; then dry "karpathy: claude plugin marketplace add $m; claude plugin install $p"; return; fi
+  ask "Install the karpathy-guidelines plugin with the claude CLI?" || { say "karpathy: skipped. Manual: claude plugin marketplace add $m && claude plugin install $p"; return; }
+  claude plugin marketplace add "$m" || warn "karpathy: marketplace add failed (maybe already added)"
+  claude plugin install "$p" || warn "karpathy: install failed; run it by hand"
+}
+
+# ---------------------------------------------------------------- commands
+cmd_install() {
+  parse_args "$@"; need_python; resolve_target
+  [ -d "$AGENTKIT_HOME/agents" ] || die "agentkit files not found in $AGENTKIT_HOME"
+  say "agentkit $(version): installing into $TARGET"
+  [ "$DRY" = 1 ] && say "(dry run: nothing is written)"
+  MODE=install
+  if [ "$DRY" != 1 ]; then mkdir -p "$TARGET/agents" "$STATE" || die "cannot create $TARGET"; fi
+  apply_all
+  write_manifest
+  summary
+  step_claude_md install
+  step_hooks
+  step_gstack
+  step_karpathy
+  say ""
+  say "Done. Run 'agentkit doctor' to check the setup."
+}
+
+git_pull() {
+  [ -d "$AGENTKIT_HOME/.git" ] || return 2
+  git -C "$AGENTKIT_HOME" pull --ff-only
+}
+
+cmd_update() {
+  parse_args "$@"; need_python; resolve_target
+  local before after
+  UPDATE_STATUS="$STATE/update-status"
+  [ -f "$MANIFEST" ] || die "agentkit is not installed in $TARGET (run: agentkit install)"
+  say "agentkit update ($(date '+%Y-%m-%d %H:%M:%S'))"
+  if [ "$DRY" = 1 ]; then
+    dry "git -C $AGENTKIT_HOME pull --ff-only"
+  else
+    before="$(git -C "$AGENTKIT_HOME" rev-parse --short HEAD 2> /dev/null)"
+    git_pull
+    case $? in
+      0) ;;
+      2) update_failed "$AGENTKIT_HOME is not a git clone, cannot update" ;;
+      *) update_failed "git pull --ff-only failed in $AGENTKIT_HOME (local commits or changes?). Fix it by hand: cd $AGENTKIT_HOME && git status" ;;
+    esac
+    after="$(git -C "$AGENTKIT_HOME" rev-parse --short HEAD 2> /dev/null)"
+    say "agentkit $(version) ($before -> $after)"
+  fi
+  MODE=update
+  apply_all
+  write_manifest
+  summary
+  step_claude_md update
+  refresh_hooks
+  if [ "$QUIET" = 1 ] && [ "$DRY" != 1 ] && [ "$N_KEPT" -gt 0 ]; then
+    echo "agentkit: update left $N_KEPT *.agentkit-new file(s) next to files you edited; run 'agentkit update' to list them" > "$UPDATE_STATUS"
+  fi
+  return 0
+}
+
+# Refresh hook entries that carry our marker but whose command changed (for example AGENTKIT_HOME
+# moved). Never adds an entry. No prompt: only our own marked entries are touched.
+refresh_hooks() {
+  local src ev cmd t st
+  skipped hooks && return 0
+  [ -f "$SETTINGS" ] || return 0
+  for src in agentkit-agent-log agentkit-auto-update; do
+    if [ "$src" = agentkit-agent-log ]; then ev=SubagentStop; cmd="$(AGENTLOG_CMD)"; t=20
+    else ev=SessionStart; cmd="\"$AGENTKIT_HOME/hooks/update-check.sh\""; t=5; fi
+    st="$(py hook-add "$SETTINGS" "$ev" "$src" "$cmd" "$t" check refresh 2> /dev/null)" || continue
+    [ "$st" = unchanged ] && continue
+    if [ "$DRY" = 1 ]; then dry "settings.json: refresh $src"; continue; fi
+    backup "$SETTINGS"
+    if py hook-add "$SETTINGS" "$ev" "$src" "$cmd" "$t" write refresh > /dev/null; then say "settings.json: refreshed $src"; fi
+  done
+}
+
+update_failed() {
+  printf 'error: %s\n' "$1" >&2
+  if [ "$QUIET" = 1 ] && [ "$DRY" != 1 ]; then
+    echo "agentkit: auto-update failed, see $STATE/update.log" > "$UPDATE_STATUS"
+  fi
+  exit 1
+}
+
+cmd_auto_update() {
+  local sub="${1:-status}"
+  [ $# -gt 0 ] && shift
+  parse_args "$@"; need_python; resolve_target
+  local cmd="$AGENTKIT_HOME/hooks/update-check.sh"
+  case "$sub" in
+    on)
+      [ -x "$cmd" ] || die "$cmd not found or not executable"
+      hook_apply SessionStart agentkit-auto-update "\"$cmd\"" 5 "Add the SessionStart auto-update hook to $SETTINGS?" ;;
+    off) hook_remove agentkit-auto-update ;;
+    status)
+      if [ -f "$SETTINGS" ] && py hook-has "$SETTINGS" agentkit-auto-update 2> /dev/null; then echo "auto-update: on"; else echo "auto-update: off"; fi ;;
+    *) die "usage: agentkit auto-update on|off|status" ;;
+  esac
+}
+
+cmd_uninstall() {
+  parse_args "$@"; need_python; resolve_target
+  local rel mh dest d sk link real_home default_home
+  [ -f "$MANIFEST" ] || [ -d "$STATE" ] || die "agentkit is not installed in $TARGET"
+  say "Uninstalling agentkit from $TARGET"
+  [ "$DRY" = 1 ] && say "(dry run: nothing is removed)"
+  if [ "$DRY" != 1 ]; then ask "Remove agentkit files, hooks and the CLAUDE.md block?" || die "aborted"; fi
+  MF_OLD="$(mktmp)"
+  [ -f "$MANIFEST" ] && py mf-read "$MANIFEST" > "$MF_OLD"
+  local removed=0 kept="" skills=""
+  while IFS="$(printf '\t')" read -r rel mh; do
+    [ -n "$rel" ] || continue
+    dest="$TARGET/$rel"
+    sk=""
+    case "$rel" in skills/*) d="${rel#skills/}"; sk="${d%%/*}"; skills="$skills $sk" ;; esac
+    [ -e "$dest" ] || [ -L "$dest" ] || continue
+    if [ ! -L "$dest" ] && { [ -z "$sk" ] || [ ! -L "$TARGET/skills/$sk" ]; } && [ "$(sha "$dest")" = "$mh" ]; then
+      if [ "$DRY" = 1 ]; then dry "remove $rel"; else rm -f "$dest"; fi
+      removed=$((removed + 1))
+    else
+      kept="$kept $rel"
+    fi
+  done < "$MF_OLD"
+  for d in $skills; do
+    if [ "$DRY" != 1 ] && [ -d "$TARGET/skills/$d" ] && [ ! -L "$TARGET/skills/$d" ]; then
+      find "$TARGET/skills/$d" -depth -type d -empty -delete
+    fi
+  done
+  say "Removed $removed file(s)."
+  if [ -n "$kept" ]; then
+    say "Kept because you edited them (delete by hand if you want):"
+    for rel in $kept; do say "  $TARGET/$rel"; done
+  fi
+  hook_remove agentkit-
+  if [ -f "$CLAUDE_MD" ] && ! skipped claude-md; then
+    local st
+    st="$(py block-del "$CLAUDE_MD" check)" || st=none
+    if [ "$st" != none ]; then
+      if [ "$DRY" = 1 ]; then dry "CLAUDE.md: remove agentkit block"; else
+        backup "$CLAUDE_MD"; py block-del "$CLAUDE_MD" write > /dev/null && say "CLAUDE.md: removed agentkit block"
+      fi
+    fi
+  fi
+  if [ "$DRY" = 1 ]; then dry "remove state dir $STATE"; elif [ -d "$STATE" ]; then
+    rm -f "$STATE/manifest.json" "$STATE/last-update-check" "$STATE/update.log" "$STATE/update-status"
+    if [ "$PURGE" = 1 ]; then
+      rm -rf "${STATE:?}"
+    elif ! rmdir "$STATE" 2> /dev/null; then
+      say "Kept $STATE/backups (your backups). Delete it by hand, or use --purge."
+    fi
+  fi
+  if [ "$PURGE" = 1 ] && [ -n "$PROJECT" ]; then
+    warn "--purge with --project removes only this project's state; the shared clone $AGENTKIT_HOME is kept (run a user-scope uninstall --purge)"
+  elif [ "$PURGE" = 1 ]; then
+    link="$HOME/.local/bin/agentkit"
+    if [ -L "$link" ]; then
+      case "$(readlink "$link")" in "$AGENTKIT_HOME"/*) if [ "$DRY" = 1 ]; then dry "remove $link"; else rm -f "$link"; fi ;; esac
+    fi
+    # Only the default clone (~/.agentkit, a git clone) is deleted. A dev checkout is kept.
+    real_home="$(cd "$AGENTKIT_HOME" 2> /dev/null && pwd -P)"
+    default_home="$(cd "$HOME" 2> /dev/null && pwd -P)/.agentkit"
+    if [ -n "$real_home" ] && [ "$real_home" = "$default_home" ] && [ -d "$real_home/.git" ] && [ -f "$real_home/bin/agentkit" ]; then
+      if [ "$DRY" = 1 ]; then dry "remove $AGENTKIT_HOME"; else rm -rf "${real_home:?}"; say "Removed $AGENTKIT_HOME"; fi
+    else
+      say "Kept $AGENTKIT_HOME (not the default ~/.agentkit git clone). Delete it by hand if you want."
+    fi
+  fi
+  say ""
+  say "Not removed: gstack and the karpathy plugin."
+  say "  gstack:   delete $CLAUDE_HOME/skills/gstack and the settings.json entries marked _gstack_source"
+  say "  karpathy: claude plugin uninstall andrej-karpathy-skills@karpathy-skills"
+}
+
+cmd_doctor() {
+  parse_args "$@"; resolve_target
+  local fails=0 f n st mh inst tab
+  tab="$(printf '\t')"
+  ok() { printf '  ok    %s\n' "$*"; }
+  bad() { printf '  FAIL  %s\n' "$*"; fails=$((fails + 1)); }
+  note() { printf '  warn  %s\n' "$*"; }
+  echo "agentkit $(version) doctor (target: $TARGET)"
+  if command -v python3 > /dev/null 2>&1 && python3 -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+    ok "python3 $(python3 -I -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+  else bad "python3 >= 3.9 not found"; fi
+  if command -v git > /dev/null 2>&1; then ok "git"; else bad "git not found"; fi
+  if command -v claude > /dev/null 2>&1; then ok "claude CLI"; else note "claude CLI not found (needed for the karpathy plugin)"; fi
+  if command -v gh > /dev/null 2>&1; then ok "gh (optional)"; else note "gh not found (optional, used by 'agentkit feedback')"; fi
+  case ":$PATH:" in *":$HOME/.local/bin:"*) ok "\$HOME/.local/bin is on PATH" ;; *) note "\$HOME/.local/bin is not on PATH" ;; esac
+  if [ -f "$AGENTKIT_HOME/bin/agentkit" ]; then ok "AGENTKIT_HOME $AGENTKIT_HOME"; else bad "AGENTKIT_HOME not found: $AGENTKIT_HOME"; fi
+  if [ -d "$AGENTKIT_HOME/.git" ]; then
+    if [ -z "$(git -C "$AGENTKIT_HOME" status --porcelain 2> /dev/null)" ]; then ok "AGENTKIT_HOME is clean"; else note "AGENTKIT_HOME has local changes (update may fail)"; fi
+  else note "AGENTKIT_HOME is not a git clone (update will not work)"; fi
+  if [ -f "$MANIFEST" ]; then
+    inst="$(py mf-version "$MANIFEST")"
+    if [ "$inst" = "$(version)" ]; then ok "installed version $inst"; else note "installed version $inst, repo version $(version) (run: agentkit update)"; fi
+    MF_OLD="$(mktmp)"; py mf-read "$MANIFEST" > "$MF_OLD"
+    for f in "$AGENTKIT_HOME"/agents/*.md; do
+      [ -f "$f" ] || continue
+      n="$(basename "$f")"
+      mh="$(awk -F"$tab" -v k="agents/$n" '$1 == k { print $2; exit }' "$MF_OLD")"
+      if [ ! -e "$TARGET/agents/$n" ]; then st=missing
+      elif [ -z "$mh" ]; then st="not managed by agentkit"
+      elif [ "$(sha "$TARGET/agents/$n")" = "$mh" ]; then st=ok
+      else st=modified; fi
+      case "$st" in ok) ok "agent ${n%.md}" ;; modified) note "agent ${n%.md}: modified (kept on update)" ;; missing) bad "agent ${n%.md}: missing" ;; *) note "agent ${n%.md}: $st" ;; esac
+    done
+    for f in "$AGENTKIT_HOME"/skills/*/; do
+      [ -f "$f/SKILL.md" ] || continue
+      n="$(basename "$f")"
+      if [ -f "$TARGET/skills/$n/SKILL.md" ]; then
+        if grep -q "^skills/$n/" "$MF_OLD"; then ok "skill $n"; else note "skill $n: not managed by agentkit"; fi
+      else note "skill $n: missing"; fi
+    done
+  else
+    bad "not installed in $TARGET (run: agentkit install)"
+  fi
+  if [ -d "$CLAUDE_HOME/skills/gstack" ]; then ok "gstack"; else note "gstack not installed"; fi
+  if command -v claude > /dev/null 2>&1; then
+    if claude plugin list 2> /dev/null | grep -q 'andrej-karpathy-skills'; then ok "karpathy plugin"; else note "karpathy plugin not installed"; fi
+  fi
+  if [ -f "$SETTINGS" ] && py hook-has "$SETTINGS" agentkit-agent-log 2> /dev/null; then ok "SubagentStop hook in settings.json"; else note "SubagentStop hook not in settings.json"; fi
+  if [ -f "$SETTINGS" ] && py hook-has "$SETTINGS" agentkit-auto-update 2> /dev/null; then ok "auto-update on"; else note "auto-update off (agentkit auto-update on)"; fi
+  if [ -f "$CLAUDE_MD" ] && py block-has "$CLAUDE_MD" 2> /dev/null; then ok "CLAUDE.md block"; else note "CLAUDE.md block not present"; fi
+  if [ "$fails" -gt 0 ]; then echo "$fails required check(s) failed"; exit 1; fi
+  echo "all required checks passed"
+}
+
+cmd_log() { need_python; exec python3 -I "$AGENTKIT_HOME/hooks/agent-log.py" "$@"; }
+
+cmd_feedback() {
+  parse_args "$@"; need_python; resolve_target
+  local f title keep
+  f="$(mktmp)"
+  python3 -I "$AGENTKIT_HOME/hooks/agent-log.py" export --out "$f" || die "log export failed"
+  if [ ! -s "$f" ] || ! py export-has-groups "$f"; then
+    echo "Nothing to send: no open issues in the agent log."
+    return 0
+  fi
+  cat "$f"
+  echo ""
+  title="agent-log feedback $(date +%Y-%m-%d)"
+  # Keep a copy outside the work dir (which is removed on exit).
+  mkdir -p "$STATE" && keep="$STATE/feedback-$TS.json" && cp "$f" "$keep" || die "cannot save the export in $STATE"
+  if ! command -v gh > /dev/null 2>&1; then
+    echo "gh not found. The export is saved in $keep"
+    echo "Open https://github.com/IbrahimHosseini/agentkit/issues/new and paste it."
+    return 0
+  fi
+  if ! ask "Create the GitHub issue '$title' with this text in IbrahimHosseini/agentkit?"; then
+    echo "Not sent. The export is saved in $keep"
+    return 0
+  fi
+  if gh issue create --repo IbrahimHosseini/agentkit --title "$title" --label agent-log --body-file "$f" \
+    || gh issue create --repo IbrahimHosseini/agentkit --title "$title" --body-file "$f"; then
+    rm -f "$keep"
+  else
+    echo "gh failed. The export is saved in $keep"
+    return 1
+  fi
+}
+
+cmd_help() {
+  cat <<'EOF'
+agentkit: shared Claude Code agents and skills
+
+  agentkit install [--project DIR] [--dry-run] [--yes] [--force] [--skip STEP]...
+        STEP is one of: gstack karpathy claude-md hooks skills
+  agentkit update [--project DIR] [--quiet] [--force] [--dry-run]
+  agentkit auto-update on|off|status
+  agentkit uninstall [--project DIR] [--purge] [--dry-run] [--yes]
+  agentkit doctor [--project DIR]
+  agentkit log report|resolve|export|merge [args]
+  agentkit feedback
+  agentkit version | help
+
+Environment: AGENTKIT_HOME (default ~/.agentkit), AGENTKIT_REPO, CLAUDE_CONFIG_DIR
+EOF
+}
+
+case "${1:-help}" in
+  install) shift; cmd_install "$@" ;;
+  update) shift; cmd_update "$@" ;;
+  auto-update) shift; cmd_auto_update "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  doctor) shift; cmd_doctor "$@" ;;
+  log) shift; cmd_log "$@" ;;
+  feedback) shift; cmd_feedback "$@" ;;
+  version | --version | -v) version ;;
+  help | --help | -h) cmd_help ;;
+  *) printf 'unknown command: %s\n\n' "$1" >&2; cmd_help >&2; exit 1 ;;
+esac

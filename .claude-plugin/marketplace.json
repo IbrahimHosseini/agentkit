@@ -1,0 +1,13 @@
+{
+  "name": "agentkit",
+  "owner": {
+    "name": "Ibrahim Hosseini"
+  },
+  "plugins": [
+    {
+      "name": "agentkit",
+      "source": "./",
+      "description": "A shareable pack of Claude Code agents, skills and an agent-log hook for a team."
+    }
+  ]
+}

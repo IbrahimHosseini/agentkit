@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck (ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      # validate.sh runs shellcheck --severity=warning when shellcheck is installed (ubuntu here).
+      - name: Validate
+        run: scripts/validate.sh
+      - name: Tests
+        run: |
+          if [ -f tests/run.sh ]; then bash tests/run.sh; else echo "no tests/run.sh"; fi
