@@ -201,7 +201,7 @@ t_dry_run_writes_nothing() {
   assert_rc 0 "piped dry run"
   assert_contains "[dry-run] git clone"
   assert_eq "$(snap "$HOME")" "$before" "piped dry run changed files under HOME"
-  assert_eq "$(ls -A "$TMPDIR" | grep -c 'agentkit-dry')" 0 "piped dry run left its temp clone behind"
+  assert_eq "$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -name '*agentkit-dry*' | wc -l | tr -d ' ')" 0 "piped dry run left its temp clone behind"
 }
 
 # Regression: mktmp used inside $(...) lost its list, so temp files were never removed.

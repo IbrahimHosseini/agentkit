@@ -363,7 +363,10 @@ def run_checks(inp):
             p = u.get("file_path")
             if n in ("Edit", "Write") and isinstance(p, str):
                 rp = os.path.realpath(os.path.join(cwd, p))
-                if any(rp == g or rp.startswith(g + "/") for g in ignore):
+                rc = os.path.realpath(cwd or ".")
+                # /tmp is ignored only outside the project, so a project under /tmp is still checked.
+                if any((rp == g or rp.startswith(g + "/")) and not (g == ignore[0] and rp.startswith(rc + "/"))
+                       for g in ignore):
                     continue
                 if not in_scope(p, entries, cwd):
                     found.append(("scope", "warn", ev(p + " | " + line), i))
