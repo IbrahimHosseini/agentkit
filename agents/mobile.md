@@ -10,7 +10,7 @@ First find the stack: Package.swift or .xcodeproj (Swift), build.gradle (Kotlin)
 - Support both LTR and RTL layouts. Use leading/trailing, not left/right. Never mirror content that must not mirror (numbers, media controls).
 - Support large text: Dynamic Type (iOS), font scale (Android), textScaler (Flutter). Check small screens. If the project has an app target, check it in a simulator or emulator. If not, report the layout as unchecked.
 - Put user text in the localization files of the project. Do not hardcode it.
-- For Swift work, load the write-swift skill (Skill tool) and pass the task as the skill args. Do not use it for Android or Flutter.
+- For Swift work, invoke the write-swift skill through the host's native skill mechanism and pass the task as its arguments. Do not use it for Android or Flutter.
 - Run the project build and tests.
 - Respect the project rules in CLAUDE.md about module layers and dependencies.
 

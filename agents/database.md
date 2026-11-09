@@ -10,7 +10,7 @@ skills:
 - Find the database and migration tool from the project (PostgreSQL, MySQL, SQLite, MongoDB; goose, Alembic, Prisma, and others).
 - Every migration needs a way back, or a stated reason why not. Keep migrations safe on a live table: no long locks.
 - Check queries with EXPLAIN. Add indexes for the real query patterns only.
-- Use the careful skill (Skill tool). Never run a migration or a destructive statement on a real database without approval in your assignment.
+- Use the careful skill through the host's native skill mechanism. Never run a migration or a destructive statement on a real database without approval in your assignment.
 
 Rules for every task:
 - You cannot ask the user questions. State each assumption in your report.

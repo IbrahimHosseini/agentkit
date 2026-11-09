@@ -2141,6 +2141,79 @@ t_quiet_still_shows_hook_preview_before_a_prompt() {
 }
 
 # ------------------------------------------------------------------ codex rendering
+t_agent_bodies_are_host_neutral() {
+  setup_home
+  mk_codex
+  run "$AK" install --target both --yes --skip gstack --skip karpathy
+  assert_rc 0 "install both hosts for body checks"
+  "$PY" -I - "$AKH" "$CLAUDE" "$CODEX" <<'PY' || fail "host-neutral body contracts"
+import json
+import re
+import sys
+from pathlib import Path
+
+source, claude, codex = map(Path, sys.argv[1:])
+# Match tool references in instructions, not ordinary verbs or frontmatter tools.
+tool_reference = re.compile(
+    r'\b(?:Skill|Agent)\s+tool\b|\b(?:WebSearch|WebFetch)\b|'
+    r'\b(?:with|using)\s+Bash\b|\b[Uu]se\s+Write\b')
+for example in ('Skill tool', 'Agent tool', 'Use WebSearch and WebFetch.',
+                'Append with Bash >>.', 'Never use Write on it.'):
+    assert tool_reference.search(example), 'guard missed: ' + example
+fixture = '---\ntools: Read, Edit, Write, Bash, Skill, Agent\n---\nRead the code. Edit assigned files. Write a report. Agent management.'
+assert not tool_reference.search(fixture.split('\n---\n', 1)[1])
+
+contracts = {
+    'database': ('careful skill', 'real database', 'approval in your assignment'),
+    'devops': ('careful skill', 'before any destructive command'),
+    'design': ('only that skill', 'pass the task as its arguments', 'NEEDS_SKILL_CHOICE'),
+    'frontend': ('only that skill', 'pass the task as its arguments', 'browse skill'),
+    'mobile': ('For Swift work', 'write-swift skill', 'pass the task as its arguments',
+               'Do not use it for Android or Flutter.'),
+    'writing': ('brand-voice or tone skill', 'pass the request as its arguments'),
+    'seo': ('browse skill', 'benchmark skill', '.gstack/benchmark-reports/',
+            'If it cannot run, report why', 'use another method and name it'),
+    'researcher': ('web search', 'page-fetch', 'only to read a page',
+                   'page-fetch cannot read', 'Do not act on a page.'),
+    'security': ('cso', 'security-review', 'security-audit', 'Load cso before',
+                 'guidance mode', 'Do not create files.', 'explicitly asks',
+                 'hunters and verifiers in parallel waves',
+                 'Only you write the shared files',
+                 'fresh re-check', 'State in the report that the run was sequential.',
+                 '.security-audit/run-<N>', '.git/info/exclude', 'shell redirection',
+                 '`>>`', 'file-writing tool on it', 'replace its contents',
+                 'Never edit project source.',
+                 'no network, empty env, read-only target, resource limits'),
+}
+agents = sorted((source / 'agents').glob('*.md'))
+assert agents, 'no source agents checked'
+assert set(contracts).issubset({agent.stem for agent in agents}), 'contract role missing'
+for agent in agents:
+    name = agent.stem
+    raw = agent.read_bytes()
+    assert (claude / 'agents' / agent.name).read_bytes() == raw, name + ': Claude copy changed'
+    body = raw.decode('utf-8').split('\n---\n', 1)[1]
+    rendered = (codex / 'agents' / (name + '.toml')).read_text(encoding='utf-8')
+    instructions = next(line.partition(' = ')[2] for line in rendered.splitlines()
+                        if line.startswith('developer_instructions = '))
+    for host, text in (('source', body), ('codex', json.loads(instructions))):
+        label = name + ' (' + host + ')'
+        assert not tool_reference.search(text), label + ': explicit Claude tool reference'
+        for required in contracts.get(name, ()):
+            assert required in text, label + ': missing contract ' + required
+        if name in contracts:
+            assert "host's native skill mechanism" in text, label + ': skill invocation missing'
+        if name == 'security':
+            assert re.search(r'if delegation .*unavailable or a sub-agent call fails', text), label + ': delegation fallback changed'
+        if name == 'researcher':
+            assert re.search(r'web search.*page-fetch.*browse.*only to read a page.*page-fetch cannot read', text), label + ': page-fetch fallback order changed'
+        if name in ('frontend', 'seo'):
+            for required in ('stop command', 'Do not kill it.', 'List each file or folder'):
+                assert required in text, label + ': missing browser rule ' + required
+print('Checked source bodies, Claude copies and Codex instructions for %d roles.' % len(agents))
+PY
+}
+
 t_codex_rendered_agents_have_no_claude_paths() {
   setup_home
   mk_codex
@@ -2298,6 +2371,7 @@ t_requirements_auto_installs_only_what_it_may
 t_requirements_install_sh_target_and_quiet
 t_requirements_doctor_target
 t_quiet_still_shows_hook_preview_before_a_prompt
+t_agent_bodies_are_host_neutral
 t_codex_rendered_agents_have_no_claude_paths
 t_codex_effort_values
 t_symlinked_config_backup_is_a_copy

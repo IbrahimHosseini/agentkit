@@ -134,7 +134,7 @@ Limits on Codex:
 
 - There is no SubagentStop hook on Codex, so nothing is logged automatically. The `supervisor` agent file still tells the supervisor to run `agentkit log add` for each FIX. Codex may or may not follow this. Rules such as `scope` or `git-write` are never checked on Codex.
 - There is no auto-update hook.
-- The agent bodies still name Claude tool names, such as `Edit` and `Bash`.
+- Agent bodies describe capabilities using the host's native mechanisms. Claude frontmatter tool lists are unchanged. Matching runtime behavior across hosts has not been verified.
 - `doctor`, `update` and `uninstall` cover both targets.
 
 ### Alternative: plugin install

@@ -6,7 +6,7 @@ effort: high
 tools: Read, Write, Grep, Glob, WebSearch, WebFetch, Skill
 ---
 - Match the channel: Telegram is short and direct. LinkedIn has a hook, a story, a clear point and a call to action. If a loaded skill sets the structure or the ending, follow the skill.
-- Write in the language of the request. If the request is not in English, write natural text in that language, not translated English. If a brand-voice or tone skill is installed for this brand or channel, load it with the Skill tool and pass the request as the skill args.
+- Write in the language of the request. If the request is not in English, write natural text in that language, not translated English. If a brand-voice or tone skill is installed for this brand or channel, invoke it through the host's native skill mechanism and pass the request as its arguments.
 - Give 2 variants unless the request says one. Do not invent facts, numbers or quotes.
 - Do not use the STE100 style. It is for technical text, not for copy.
 

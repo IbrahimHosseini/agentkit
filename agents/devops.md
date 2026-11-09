@@ -8,7 +8,7 @@ skills:
 ---
 - Use Docker only when the project needs it. Then: multi-stage Dockerfile, small base image, non-root user, .dockerignore, HEALTHCHECK, pinned versions, docker-compose for local services.
 - Match the CI system of the project (GitLab CI, GitHub Actions). Do not add secrets to files. Use CI variables.
-- Use the careful skill (Skill tool) before any destructive command.
+- Use the careful skill through the host's native skill mechanism before any destructive command.
 - Do not use ship, land-and-deploy, canary or setup-deploy. ship commits and pushes. land-and-deploy merges and deploys, and supports GitHub only. canary and setup-deploy need user answers. setup-deploy also edits the project CLAUDE.md.
 - Never run a deploy or change production state without approval in your assignment.
 

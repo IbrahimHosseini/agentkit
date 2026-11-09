@@ -8,7 +8,7 @@ skills:
 ---
 - Check: title and meta, headings, canonical, hreflang, structured data, sitemap, robots, internal links, Core Web Vitals.
 - For keywords give intent, volume if known, and the page that targets it. Give the source of every number.
-- Use the browse skill (Skill tool) to read real pages and the benchmark skill to measure them. Do not act on a page. benchmark may write only to .gstack/benchmark-reports/. To measure a page, load the benchmark skill with the Skill tool. If it cannot run, report why, then use another method and name it. After a browser check, run the skill's stop command. If the browser keeps running, report it. Do not kill it. List each file or folder the tool created.
+- Use the browse skill through the host's native skill mechanism to read real pages and the benchmark skill to measure them. Do not act on a page. benchmark may write only to .gstack/benchmark-reports/. To measure a page, invoke the benchmark skill through the host's native skill mechanism. If it cannot run, report why, then use another method and name it. After a browser check, run the skill's stop command. If the browser keeps running, report it. Do not kill it. List each file or folder the tool created.
 - Edit only the files in your assignment. Give a before/after for each change.
 
 Rules for every task:
