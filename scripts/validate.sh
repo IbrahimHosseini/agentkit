@@ -73,6 +73,19 @@ if python3 -I -m py_compile hooks/agent-log.py; then pass "py_compile hooks/agen
 find . -name __pycache__ -path './hooks/*' -prune -exec rm -rf {} + 2> /dev/null
 if python3 -I hooks/test_agent_log.py > /dev/null 2>&1; then pass "hooks/test_agent_log.py"; else fail "hooks/test_agent_log.py (run it by hand for details)"; fi
 
+# Codex support: python helper, data files, and the requirements block embedded in install.sh.
+if PYTHONDONTWRITEBYTECODE=1 python3 -I -m py_compile lib/codex.py; then pass "py_compile lib/codex.py"; else fail "py_compile lib/codex.py"; fi
+find . -name __pycache__ -path './lib/*' -prune -exec rm -rf {} + 2> /dev/null
+for f in codex/models.map codex/karpathy-guidelines.md templates/AGENTS.md.snippet; do
+  if [ -s "$f" ]; then pass "exists $f"; else fail "missing or empty $f"; fi
+done
+blk() { sed -n '/^# >>> agentkit:requirements$/,/^# <<< agentkit:requirements$/p' "$1"; }
+if [ -n "$(blk lib/requirements.sh)" ] && [ "$(blk lib/requirements.sh)" = "$(blk install.sh)" ]; then
+  pass "install.sh requirements block equals lib/requirements.sh"
+else
+  fail "requirements block in install.sh differs from lib/requirements.sh"
+fi
+
 # JSON files and version match.
 for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
   if python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2> /dev/null; then pass "json $f"; else fail "json $f does not parse"; fi
@@ -82,7 +95,7 @@ pv="$(python3 -I -c 'import json; print(json.load(open(".claude-plugin/plugin.js
 if [ "$v" = "$pv" ]; then pass "plugin.json version $pv matches VERSION"; else fail "plugin.json version '$pv' differs from VERSION '$v'"; fi
 
 # Shell scripts.
-scripts="install.sh bin/agentkit hooks/update-check.sh scripts/validate.sh scripts/sync.sh"
+scripts="install.sh bin/agentkit lib/ui.sh lib/requirements.sh hooks/update-check.sh scripts/validate.sh scripts/sync.sh"
 [ -f tests/run.sh ] && scripts="$scripts tests/run.sh"
 for s in $scripts; do
   if bash -n "$s"; then pass "bash -n $s"; else fail "syntax error in $s"; fi

@@ -49,12 +49,18 @@ mkdir -p "$SUITE/work"
 # ------------------------------------------------------------------ per-test environment
 new_env() { # T
   T="$1"
-  export HOME="$T/home" TMPDIR="$T/tmp" AGENT_LOG_DIR="$T/agent-log" PATH="$REALBIN"
+  export HOME="$T/home" TMPDIR="$T/tmp" AGENT_LOG_DIR="$T/agent-log" PATH="$T/stubs:$REALBIN"
   export AGENTKIT_REPO="$T/origin.git" STUB_LOG="$T/stub.log"
+  export CODEX_HOME="$HOME/.codex" LC_ALL=C
   unset CLAUDE_CONFIG_DIR AGENTKIT_HOME AGENTKIT_UPDATE_INTERVAL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE STUB_PLUGIN_LIST STUB_GH_FAIL_LABEL
+  unset NO_COLOR LANG LC_CTYPE AGENTKIT_REQS_OK STUB_CURL_LOG
   mkdir -p "$HOME" "$TMPDIR" "$T/work" "$T/stubs"
+  # A silent claude, so the requirements check passes. Tests that need no claude remove it.
+  printf '#!/bin/sh\nexit 0\n' > "$T/stubs/claude"
+  chmod +x "$T/stubs/claude"
   cp -R "$BASE" "$AGENTKIT_REPO"
   CLAUDE="$HOME/.claude"
+  CODEX="$CODEX_HOME"
   AKH="$HOME/.agentkit"
   AK="$AKH/bin/agentkit"
   RUN_STDIN=/dev/null
@@ -66,6 +72,7 @@ sandbox_ok() {
   case "$HOME" in "$SUITE"/t.*/home) ;; *) echo "FATAL: HOME is not a temp dir: $HOME"; exit 99 ;; esac
   [ "$HOME" != "$REAL_HOME" ] || { echo "FATAL: HOME is the real HOME"; exit 99; }
   [ -z "${CLAUDE_CONFIG_DIR:-}" ] || { echo "FATAL: CLAUDE_CONFIG_DIR is set"; exit 99; }
+  case "${CODEX_HOME:-}" in "$SUITE"/t.*) ;; '') ;; *) echo "FATAL: CODEX_HOME is outside the temp dir: $CODEX_HOME"; exit 99 ;; esac
   case "$AGENT_LOG_DIR" in "$SUITE"/*) ;; *) echo "FATAL: AGENT_LOG_DIR is outside the temp dir"; exit 99 ;; esac
 }
 
@@ -149,6 +156,49 @@ EOF
   chmod +x "$T/stubs/gh"
   PATH="$T/stubs:$REALBIN"
 }
+# A logging codex stub (the default claude stub is silent). Found through $T/stubs on PATH.
+mk_codex() {
+  cat > "$T/stubs/codex" <<'EOF'
+#!/bin/sh
+echo "codex $*" >> "$STUB_LOG"
+exit 0
+EOF
+  chmod +x "$T/stubs/codex"
+}
+# A curl stub: any call is recorded in $T/curl.log and fails. agentkit must never reach it with --yes.
+mk_curl() {
+  cat > "$T/stubs/curl" <<'EOF'
+#!/bin/sh
+echo "curl $*" >> "$T_CURL_LOG"
+exit 22
+EOF
+  chmod +x "$T/stubs/curl"
+  export T_CURL_LOG="$T/curl.log"
+}
+# no_tool NAME...: PATH of the stubs and REALBIN without the named tools (no claude, no git, ...).
+no_tool() {
+  local d="$T/notool" f b x skip
+  rm -rf "$d"; mkdir -p "$d"
+  for f in "$T/stubs"/* "$REALBIN"/*; do
+    b="$(basename "$f")"; skip=0
+    for x in "$@"; do [ "$b" = "$x" ] && skip=1; done
+    [ "$skip" = 1 ] || [ -e "$d/$b" ] || ln -s "$f" "$d/$b"
+  done
+  PATH="$d"
+}
+install_codex() { run "$AK" install --target codex --yes --skip gstack --skip karpathy "$@"; }
+# run_pty CMD...: like run, but with a pseudo terminal on stdin, stdout and stderr.
+run_pty() {
+  sandbox_ok
+  "$PY" -I "$LIB/pty_run.py" "$@" > "$T/pty.raw" 2>&1 < /dev/null
+  RC=$?
+  OUT="$(tr -d '\r' < "$T/pty.raw")"
+}
+assert_match() { printf '%s\n' "$OUT" | grep -Eq -- "$1" || { fail "${2:-output}: no line matches '$1'"; show_out; }; }
+assert_dir_has() { [ -d "$1" ] || fail "missing folder: $1"; }
+has_esc() { case "$1" in *$'\033'*) return 0 ;; esac; return 1; }
+# line_of TEXT: number of the first output line containing TEXT (0 if none).
+line_of() { printf '%s\n' "$OUT" | grep -n -F -- "$1" | head -n 1 | cut -d: -f1 | grep . || echo 0; }
 # A fake agentkit home for the update-check hook: it records each call.
 mk_fake_ak() {
   FAKE="$T/fake"
@@ -1028,6 +1078,1148 @@ t_claude_md_duplicate_heading_warns() {
   assert_not_contains "WARNING:" "clean install"
 }
 
+# ------------------------------------------------------------------ requirements
+t_requirements_missing_agent_cli() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_curl
+  local before
+  before="$(snap "$HOME")"
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc_nz "install without claude and codex"
+  assert_contains "Requirements:"
+  assert_match '^  \+ git +[0-9]' "git row"
+  assert_match '^  x claude +not found, one of claude or codex is required' "claude row"
+  assert_match '^  x codex +not found, one of claude or codex is required' "codex row"
+  assert_contains "How to install what is missing:"
+  assert_contains "curl -fsSL https://claude.ai/install.sh | bash"
+  assert_contains "downloads and runs a remote script"
+  assert_contains "https://github.com/openai/codex"
+  assert_contains "requirements are not met"
+  # --yes never runs a remote script, so curl is never called.
+  assert_contains "No TTY: not running a remote script"
+  assert_nofile "$T/curl.log"
+  assert_eq "$(snap "$HOME")" "$before" "a failed requirements check changed files"
+  assert_nofile "$CLAUDE"
+  assert_nofile "$CODEX"
+  # The bootstrap script checks too, before it links or installs anything.
+  run bash "$AKH/install.sh" --yes --skip gstack --skip karpathy
+  assert_rc_nz "install.sh without claude and codex"
+  assert_contains "requirements are not met"
+  assert_nofile "$T/curl.log"
+  assert_nofile "$HOME/.local/bin/agentkit"
+}
+
+t_requirements_missing_git() {
+  setup_home
+  no_tool git
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc_nz "install without git"
+  assert_match '^  x git +not found, required' "git row"
+  assert_match '^  \+ python3 +3' "python3 row"
+  assert_contains "https://git-scm.com/downloads"
+  assert_contains "requirements are not met"
+  assert_nofile "$CLAUDE"
+}
+
+t_requirements_other_agent_is_enough() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_codex
+  # No --target: either agent is enough.
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install with codex only"
+  assert_match '^  x claude +not found, optional \(the other agent is installed\)' "claude row"
+  assert_match '^  \+ codex ' "codex row"
+  assert_not_contains "How to install what is missing:"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_nofile "$CLAUDE"
+  # --target codex: claude is not needed at all.
+  rm -rf "$CODEX"
+  run "$AK" install --target codex --yes --skip gstack --skip karpathy
+  assert_rc 0 "install --target codex with codex only"
+  assert_match '^  x claude +not found, optional \(not needed for this target\)' "claude row"
+  assert_file "$CODEX/agents/backend.toml"
+}
+t_requirements_dry_run_installs_nothing() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_curl
+  local before
+  before="$(snap "$HOME")"
+  run "$AK" install --dry-run --yes --skip gstack --skip karpathy
+  assert_rc_nz "dry run with unmet requirements"
+  assert_contains "Requirements:"
+  assert_contains "How to install what is missing:"
+  assert_not_contains "Running:"
+  assert_nofile "$T/curl.log"
+  assert_eq "$(snap "$HOME")" "$before" "dry run changed files"
+  run bash "$AKH/install.sh" --dry-run --yes --skip gstack --skip karpathy
+  assert_rc_nz "install.sh dry run with unmet requirements"
+  assert_not_contains "Running:"
+  assert_nofile "$T/curl.log"
+  assert_eq "$(snap "$HOME")" "$before" "install.sh dry run changed files"
+}
+
+t_requirements_ok_skips_check_not_detection() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_codex
+  # AGENTKIT_REQS_OK=1 skips the check and its output, but the CLIs found still pick the targets.
+  AGENTKIT_REQS_OK=1 run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install with the check skipped"
+  assert_not_contains "Requirements:"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_nofile "$CLAUDE"
+  # With no agent CLI at all, the default is claude (assumption: documented fallback in select_targets).
+  rm -f "$T/stubs/codex"
+  rm -rf "$CODEX"
+  AGENTKIT_REQS_OK=1 run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install with the check skipped and no CLI"
+  assert_file "$CLAUDE/agents/backend.md"
+  assert_nofile "$CODEX"
+}
+
+t_requirements_doctor() {
+  setup_home
+  install_user
+  assert_rc 0 "install"
+  run "$AK" doctor
+  assert_rc 0 "doctor after install"
+  assert_eq "$(printf '%s\n' "$OUT" | head -n 1)" "agentkit $(tr -d '[:space:]' < "$AKH/VERSION") doctor" "doctor header"
+  assert_contains "Requirements:"
+  assert_match '^  \+ git +[0-9]' "git row"
+  assert_match '^  \+ python3 +3' "python3 row"
+  assert_match '^  \+ claude' "claude row"
+  assert_match '^  x codex +not found, optional \(the other agent is installed\)' "codex row"
+  assert_contains "target claude: $CLAUDE"
+  assert_not_contains "ok    python3"
+  assert_not_contains "ok    git"
+  assert_not_contains "claude CLI"
+  # No agent CLI: the requirements fail the doctor.
+  rm -f "$T/stubs/claude"
+  run "$AK" doctor
+  assert_rc_nz "doctor without an agent CLI"
+  assert_contains "one of claude or codex is required"
+  assert_contains "requirements not met"
+  assert_contains "required check(s) failed"
+}
+
+# ------------------------------------------------------------------ output
+t_output_plain_has_no_ansi() {
+  setup_home
+  install_user
+  assert_rc 0 "install"
+  has_esc "$OUT" && fail "install output has an escape sequence"
+  case "$OUT" in *$'\r'*) fail "install output has a carriage return" ;; esac
+  run "$AK" doctor
+  has_esc "$OUT" && fail "doctor output has an escape sequence"
+  run "$AK" update
+  has_esc "$OUT" && fail "update output has an escape sequence"
+  NO_COLOR=1 run "$AK" install --yes --skip gstack --skip karpathy
+  has_esc "$OUT" && fail "NO_COLOR output has an escape sequence"
+  run "$AK" uninstall --yes
+  has_esc "$OUT" && fail "uninstall output has an escape sequence"
+  # The same checks can fail: with a terminal and no NO_COLOR the output has colors.
+}
+
+t_output_terminal_color_and_no_color() {
+  setup_home
+  run_pty "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install on a terminal"
+  has_esc "$OUT" || fail "no color on a terminal"
+  assert_contains "( o.o )" "cat logo on a terminal"
+  assert_contains "Requirements:"
+  # NO_COLOR: no escape sequence even on a terminal.
+  run_pty env NO_COLOR=1 "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install on a terminal with NO_COLOR"
+  has_esc "$OUT" && fail "NO_COLOR ignored on a terminal"
+  assert_contains "Requirements:"
+  assert_not_contains "( o.o )"
+  run_pty env NO_COLOR=1 "$AK" doctor
+  has_esc "$OUT" && fail "NO_COLOR ignored by doctor on a terminal"
+  # --quiet: no output at all on success, even on a terminal.
+  run_pty "$AK" install --quiet --yes --skip gstack --skip karpathy
+  assert_rc 0 "quiet install on a terminal"
+  assert_eq "$OUT" "" "quiet install on a terminal printed something"
+}
+
+t_output_quiet() {
+  setup_home
+  # Hooks are skipped here: see t_output_quiet_install for the hook entry text.
+  run "$AK" install --quiet --yes --skip gstack --skip karpathy --skip hooks
+  assert_rc 0 "quiet install"
+  assert_eq "$OUT" "" "quiet install printed something"
+  assert_file "$CLAUDE/agents/backend.md"
+  run "$AK" doctor --quiet
+  assert_rc 0 "quiet doctor"
+  run "$AK" uninstall --quiet --yes
+  assert_rc 0 "quiet uninstall"
+  assert_eq "$OUT" "" "quiet uninstall printed something"
+  assert_nofile "$CLAUDE/agents/backend.md"
+  # Codex too.
+  mk_codex
+  run "$AK" install --quiet --target codex --yes --skip gstack --skip karpathy
+  assert_rc 0 "quiet codex install"
+  assert_eq "$OUT" "" "quiet codex install printed something"
+  assert_file "$CODEX/agents/backend.toml"
+  run "$AK" uninstall --quiet --target codex --yes
+  assert_eq "$OUT" "" "quiet codex uninstall printed something"
+  # Errors still print.
+  rm -f "$T/stubs/claude" "$T/stubs/codex"
+  run "$AK" install --quiet --yes --skip gstack --skip karpathy
+  assert_rc_nz "quiet install without an agent CLI"
+  assert_contains "requirements are not met"
+  run "$AK" install --quiet --target bogus
+  assert_rc_nz "quiet install with a bad target"
+  assert_contains "--target: unknown value 'bogus'"
+}
+
+# --quiet must print nothing on success.
+t_output_quiet_install() {
+  setup_home
+  run "$AK" install --quiet --yes --skip gstack --skip karpathy
+  assert_rc 0 "quiet install"
+  assert_eq "$OUT" "" "quiet install printed something"
+  assert_file "$CLAUDE/agents/backend.md"
+  assert_eq "$(n_src "$CLAUDE/settings.json" SubagentStop agentkit-agent-log)" 1 "hook entry"
+}
+
+t_output_markers_and_table() {
+  setup_home
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install"
+  assert_eq "$(printf '%s\n' "$OUT" | head -n 1)" "agentkit $(tr -d '[:space:]' < "$AKH/VERSION")" "logo line"
+  [ "$(line_of "Requirements:")" -lt "$(line_of "installing into")" ] || fail "Requirements: must print before the install starts"
+  [ "$(line_of "Requirements:")" -gt 1 ] || fail "the logo line must print before Requirements:"
+  assert_contains "agentkit $(tr -d '[:space:]' < "$AKH/VERSION"): installing into $CLAUDE"
+  assert_contains "[1/3] Claude: agents and skills"
+  assert_contains "[2/3] Claude: CLAUDE.md"
+  assert_contains "[3/3] Claude: SubagentStop hook"
+  assert_contains "  + agents/backend.md"
+  assert_contains "  + skills/write-swift/SKILL.md"
+  assert_match '^  \+ Files: [0-9]+ added, 0 updated' "files line"
+  assert_match '^TARGET +ITEM +STATUS$' "table header"
+  assert_match '^claude +files +[0-9]+ added, 0 updated, 0 unchanged$' "files row"
+  assert_match '^claude +CLAUDE.md +added$' "CLAUDE.md row"
+  assert_match '^claude +SubagentStop hook +added$' "hook row"
+  # Second run: unchanged files print no line, unchanged results use "=".
+  install_user
+  assert_rc 0 "second install"
+  assert_not_contains "agents/backend.md"
+  assert_not_contains "skills/write-swift"
+  assert_contains "  = Files: 0 added, 0 updated"
+  assert_contains "  = CLAUDE.md: block already up to date"
+  assert_contains "  = settings.json: agentkit-agent-log already present"
+  assert_match '^claude +files +0 added, 0 updated, [0-9]+ unchanged$' "files row (second run)"
+  assert_match '^claude +CLAUDE.md +unchanged$' "CLAUDE.md row (second run)"
+  # Skips and updates.
+  echo "# my edit" >> "$CLAUDE/agents/backend.md"
+  upstream 'echo "<!-- upstream -->" >> agents/frontend.md
+    echo "<!-- upstream -->" >> agents/backend.md
+    git rm -q agents/seo.md
+    printf -- "---\nname: newagent\ndescription: x\ntools: Read\nmodel: sonnet\n---\nbody\n" > agents/newagent.md'
+  run "$AK" update
+  assert_rc 0 "update"
+  assert_contains "  + agents/frontend.md (updated)"
+  assert_contains "  + agents/newagent.md"
+  assert_contains "  + agents/seo.md (removed upstream)"
+  assert_contains "  ! kept your edited agents/backend.md; new version in agents/backend.md.agentkit-new"
+  assert_not_contains "agents/debugger.md"
+  run "$AK" update --force
+  assert_rc 0 "update --force"
+  assert_contains "  + agents/backend.md (replaced)"
+}
+
+# ------------------------------------------------------------------ target detection
+t_target_default_detection() {
+  setup_home
+  # Only claude on PATH (the default stub): claude only.
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install with claude only"
+  assert_file "$CLAUDE/agents/backend.md"
+  assert_nofile "$CODEX"
+  assert_not_contains "installing into $CODEX"
+  # Add codex: update and doctor still follow the manifests, so claude only.
+  mk_codex
+  run "$AK" update
+  assert_rc 0 "update"
+  assert_not_contains "codex"
+  assert_nofile "$CODEX"
+  run "$AK" doctor
+  assert_not_contains "target codex"
+  # Both CLIs: install picks both.
+  run "$AK" uninstall --yes
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install with both CLIs"
+  assert_contains "installing into $CLAUDE"
+  assert_contains "installing into $CODEX"
+  assert_file "$CLAUDE/agents/backend.md"
+  assert_file "$CODEX/agents/backend.toml"
+  # Both are installed now: update and doctor cover both.
+  run "$AK" doctor
+  assert_rc 0 "doctor with both targets"
+  assert_contains "target claude: $CLAUDE"
+  assert_contains "target codex: $CODEX"
+  run "$AK" update
+  assert_rc 0 "update with both targets"
+  assert_contains "claude: $CLAUDE"
+  assert_contains "codex: $CODEX"
+  # --target narrows it.
+  run "$AK" doctor --target codex
+  assert_contains "target codex: $CODEX"
+  assert_not_contains "target claude"
+}
+
+t_target_codex_only_cli() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_codex
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "install with codex only"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_nofile "$CLAUDE"
+  assert_not_contains "karpathy"
+}
+
+t_target_explicit_without_cli() {
+  setup_home
+  # --target codex needs the codex CLI: the requirements check fails and nothing is written.
+  local before
+  before="$(snap "$HOME")"
+  run "$AK" install --target codex --yes --skip gstack --skip karpathy
+  assert_rc_nz "install --target codex without the CLI"
+  assert_match '^  x codex +not found, required' "codex row"
+  assert_contains "requirements are not met"
+  assert_eq "$(snap "$HOME")" "$before" "a failed install changed files"
+  assert_nofile "$CODEX"
+  # With the check skipped (AGENTKIT_REQS_OK=1): warn, install anyway.
+  AGENTKIT_REQS_OK=1 run "$AK" install --target codex --yes --skip gstack --skip karpathy
+  assert_rc 0 "install --target codex with the check skipped"
+  assert_contains "codex CLI not found; installing for --target codex anyway"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_nofile "$CLAUDE"
+  # --target claude with codex present: codex is left alone.
+  rm -rf "$CODEX"
+  mk_codex
+  run "$AK" install --target claude --yes --skip gstack --skip karpathy
+  assert_rc 0 "install --target claude"
+  assert_file "$CLAUDE/agents/backend.md"
+  assert_nofile "$CODEX"
+  run "$AK" install --target bogus
+  assert_rc_nz "bad target"
+  assert_contains "--target: unknown value 'bogus' (claude|codex|both)"
+  run "$AK" install --target
+  assert_rc_nz "target without a value"
+  assert_contains "--target needs claude, codex or both"
+}
+t_target_both_install_and_uninstall() {
+  setup_home
+  mk_codex
+  run "$AK" install --target both --yes --skip gstack --skip karpathy
+  assert_rc 0 "install --target both"
+  assert_contains "[1/6] Claude: agents and skills"
+  assert_contains "[4/6] Codex: agents and skills"
+  assert_contains "[6/6] Codex: AGENTS.md"
+  assert_match '^claude +files ' "claude files row"
+  assert_match '^codex +files ' "codex files row"
+  assert_match '^codex +config.toml +added$' "config.toml row"
+  assert_match '^codex +AGENTS.md +added$' "AGENTS.md row"
+  assert_file "$CLAUDE/settings.json"
+  assert_nofile "$CODEX/settings.json"
+  # The SubagentStop hook belongs to claude only.
+  assert_eq "$(n_src "$CLAUDE/settings.json" SubagentStop agentkit-agent-log)" 1 "claude hook entries"
+  # Uninstall without --yes and no terminal: asks (and is refused), changes nothing.
+  local before
+  before="$(snap "$HOME")"
+  run "$AK" uninstall
+  assert_rc_nz "uninstall without consent"
+  assert_contains "Remove agentkit files, hooks and the instruction blocks (CLAUDE.md, AGENTS.md, config.toml) for: claude codex?"
+  assert_eq "$(snap "$HOME")" "$before" "refused uninstall changed files"
+  run "$AK" uninstall --dry-run
+  assert_rc 0 "uninstall --dry-run"
+  assert_contains "[dry-run] remove agents/backend.toml"
+  assert_contains "[dry-run] config.toml: remove agentkit block"
+  assert_eq "$(snap "$HOME")" "$before" "uninstall --dry-run changed files"
+  run "$AK" uninstall --yes
+  assert_rc 0 "uninstall both"
+  assert_nofile "$CLAUDE/agents/backend.md"
+  assert_nofile "$CODEX/agents/backend.toml"
+  assert_nofile "$CODEX/config.toml"
+  assert_nofile "$CODEX/AGENTS.md"
+  assert_nofile "$CLAUDE/CLAUDE.md"
+}
+
+t_target_project_with_codex_errors() {
+  setup_home
+  mk_codex
+  local proj="$T/proj" before
+  mkdir -p "$proj"
+  before="$(snap "$HOME")$(snap "$proj")"
+  run "$AK" install --project "$proj" --target codex --yes --skip gstack --skip karpathy
+  assert_rc_nz "--project with --target codex"
+  assert_contains "--project with codex is not supported"
+  run "$AK" install --project "$proj" --target both --yes --skip gstack --skip karpathy
+  assert_rc_nz "--project with --target both"
+  assert_contains "--project with codex is not supported"
+  run "$AK" doctor --project "$proj" --target codex
+  assert_rc_nz "doctor --project --target codex"
+  assert_eq "$(snap "$HOME")$(snap "$proj")" "$before" "a refused project install changed files"
+  assert_nofile "$proj/.claude"
+  assert_nofile "$CODEX"
+  # --project alone (and with --target claude) still works and never touches codex.
+  run "$AK" install --project "$proj" --target claude --yes --skip gstack --skip karpathy
+  assert_rc 0 "project install with --target claude"
+  assert_file "$proj/.claude/agents/backend.md"
+  assert_nofile "$CODEX"
+  run "$AK" install --project "$proj" --yes --skip gstack --skip karpathy
+  assert_rc 0 "project install with codex on PATH"
+  assert_nofile "$CODEX"
+}
+
+t_claude_only_commands_reject_codex() {
+  setup_home
+  install_user
+  run "$AK" auto-update on --target codex --yes
+  assert_rc_nz "auto-update --target codex"
+  assert_contains "auto-update is only for the claude target"
+  run "$AK" feedback --target codex
+  assert_rc_nz "feedback --target codex"
+  assert_contains "feedback is only for the claude target"
+}
+
+t_gstack_dry_run_hosts() {
+  setup_home
+  mk_codex
+  local g="$CLAUDE/skills/gstack" u=https://github.com/garrytan/gstack.git
+  run "$AK" install --dry-run --target claude --skip karpathy
+  assert_rc 0 "dry run, claude"
+  assert_contains "[dry-run] gstack: git clone --single-branch --depth 1 $u $g && cd $g && ./setup --host claude"
+  assert_not_contains "--host codex"
+  run "$AK" install --dry-run --target both --skip karpathy
+  assert_rc 0 "dry run, both"
+  assert_contains "git clone --single-branch --depth 1 $u $g && cd $g && ./setup --host claude && ./setup --host codex"
+  # codex only: the clone goes to ~/gstack, never into CODEX_HOME/skills.
+  run "$AK" install --dry-run --target codex --skip karpathy
+  assert_rc 0 "dry run, codex"
+  assert_contains "[dry-run] gstack: git clone --single-branch --depth 1 $u $HOME/gstack && cd $HOME/gstack && ./setup --host codex"
+  assert_not_contains "--host claude"
+  assert_not_contains "$CODEX/skills/gstack &&"
+  # an existing ~/gstack clone is reused
+  mkdir -p "$HOME/gstack"
+  : > "$HOME/gstack/setup"
+  run "$AK" install --dry-run --target codex --skip karpathy
+  assert_contains "[dry-run] gstack: cd $HOME/gstack && ./setup --host codex"
+  assert_not_contains "git clone"
+  # claude clone present (with its setup): both targets reuse it and add only codex
+  mkdir -p "$g"
+  : > "$g/setup"
+  run "$AK" install --dry-run --target both --skip karpathy
+  assert_contains "gstack: already installed ($g)"
+  assert_contains "[dry-run] gstack: cd $g && ./setup --host codex"
+  assert_not_contains "git clone"
+  # codex presence is any $CODEX_HOME/skills/gstack-*
+  mkdir -p "$CODEX/skills/gstack-review"
+  run "$AK" install --dry-run --target both --skip karpathy
+  assert_contains "gstack: already installed ($CODEX/skills/gstack-*)"
+  assert_not_contains "[dry-run] gstack:"
+  assert_nofile "$CODEX/agents"
+}
+
+t_gstack_prompt_and_footer() {
+  setup_home
+  mk_codex
+  local u=https://github.com/garrytan/gstack.git
+  # No --yes and no terminal: the prompt is declined, with the manual command.
+  run "$AK" install --target codex --skip karpathy
+  assert_rc 0 "install, gstack declined"
+  assert_contains "Install gstack (git clone into $HOME/gstack, then its ./setup, needs git and bun)?"
+  assert_contains "gstack: skipped. Manual: git clone --single-branch --depth 1 $u $HOME/gstack && cd $HOME/gstack && ./setup --host codex"
+  assert_nofile "$HOME/gstack"
+  run "$AK" install --target claude --skip karpathy
+  assert_contains "Install gstack (git clone into $CLAUDE/skills/gstack, then its ./setup, needs git and bun)?"
+  # uninstall footer
+  run "$AK" uninstall --target codex --yes
+  assert_rc 0 "uninstall --target codex"
+  assert_contains "gstack (codex): delete $CODEX/skills/gstack-* (and the clone in ~/gstack if you want)"
+  assert_not_contains "settings.json entries marked"
+  run "$AK" uninstall --target claude --yes
+  assert_contains "gstack:   delete $CLAUDE/skills/gstack and the settings.json entries marked _gstack_source"
+}
+
+t_gstack_codex_setup_runs() {
+  setup_home
+  mk_codex
+  # A cloned gstack in ~/gstack with a stub setup, and a bun stub: no network, no real setup.
+  mkdir -p "$HOME/gstack"
+  cat > "$HOME/gstack/setup" <<'EOF'
+#!/bin/sh
+echo "setup $*" >> "$STUB_LOG"
+mkdir -p "$CODEX_HOME/skills/gstack-review"
+exit 0
+EOF
+  chmod +x "$HOME/gstack/setup"
+  printf '#!/bin/sh\nexit 0\n' > "$T/stubs/bun"
+  chmod +x "$T/stubs/bun"
+  run "$AK" install --target codex --yes --skip karpathy
+  assert_rc 0 "install with gstack"
+  assert_grep "$STUB_LOG" "setup --host codex"
+  assert_nogrep "$STUB_LOG" "setup --host claude"
+  assert_contains "gstack: set up for codex"
+  assert_match '^codex +gstack +installed$' "gstack row"
+  assert_dir_has "$CODEX/skills/gstack-review"
+  assert_nofile "$CODEX/skills/gstack"
+  # Second run: already installed, setup is not run again.
+  : > "$STUB_LOG"
+  run "$AK" install --target codex --yes --skip karpathy
+  assert_contains "gstack: already installed ($CODEX/skills/gstack-*)"
+  assert_nogrep "$STUB_LOG" "setup --host"
+  # The same on a terminal (the spinner path).
+  rm -rf "$CODEX/skills/gstack-review"
+  run_pty "$AK" install --target codex --yes --skip karpathy
+  assert_rc 0 "install with gstack on a terminal"
+  assert_contains "gstack: set up for codex"
+  assert_grep "$STUB_LOG" "setup --host codex"
+  assert_not_contains "command not found"
+}
+# ------------------------------------------------------------------ codex target
+t_codex_install() {
+  setup_home
+  mk_codex
+  mkdir -p "$CODEX"
+  printf 'model = "my-model"\n\n[mcp_servers.foo]\ncommand = "foo"\n' > "$CODEX/config.toml"
+  printf '# My codex rules\nBe nice.\n' > "$CODEX/AGENTS.md"
+  install_codex
+  assert_rc 0 "install --target codex"
+  assert_nofile "$CLAUDE"
+  assert_grep "$STUB_LOG" "codex --version"
+  local f n name map_model map_effort
+  # one TOML per agent, none extra
+  n=0
+  for f in "$AKH"/agents/*.md; do
+    name="$(basename "$f" .md)"
+    assert_file "$CODEX/agents/$name.toml"
+    assert_grep "$CODEX/agents/$name.toml" "developer_instructions = "
+    n=$((n + 1))
+  done
+  assert_eq "$(ls "$CODEX/agents" | wc -l | tr -d ' ')" "$n" "number of agent files"
+  assert_nofile "$CODEX/agents/backend.md"
+  # models and sandbox come from codex/models.map and the tools
+  map_model="$(awk '$1 == "sonnet" { print $2 }' "$AKH/codex/models.map")"
+  map_effort="$(awk '$1 == "sonnet" { print $3 }' "$AKH/codex/models.map")"
+  assert_grep "$CODEX/agents/backend.toml" "model = \"$map_model\""
+  assert_grep "$CODEX/agents/backend.toml" "model_reasoning_effort = \"$map_effort\""
+  assert_grep "$CODEX/agents/backend.toml" 'sandbox_mode = "workspace-write"'
+  assert_grep "$CODEX/agents/security.toml" 'sandbox_mode = "read-only"'
+  assert_grep "$CODEX/agents/security.toml" 'model_reasoning_effort = "high"'
+  assert_nogrep "$CODEX/agents/writing.toml" "# Coding discipline" # writing.md has no karpathy skill
+  assert_grep "$CODEX/agents/backend.toml" "# Coding discipline"
+  # config.toml: user content first and kept, our block once
+  assert_eq "$(head -n 1 "$CODEX/config.toml")" 'model = "my-model"' "config.toml first line"
+  assert_grep "$CODEX/config.toml" "[mcp_servers.foo]"
+  assert_grep "$CODEX/config.toml" 'command = "foo"'
+  assert_eq "$(count_of "$CODEX/config.toml" '# agentkit:start')" 1 "config.toml start markers"
+  assert_eq "$(count_of "$CODEX/config.toml" '# agentkit:end')" 1 "config.toml end markers"
+  assert_eq "$(count_of "$CODEX/config.toml" '^\[agents\.')" "$n" "agent tables in config.toml"
+  assert_grep "$CODEX/config.toml" "[agents.backend]"
+  assert_grep "$CODEX/config.toml" "config_file = \"$CODEX/agents/backend.toml\""
+  # AGENTS.md: user content first and kept, our block once
+  assert_eq "$(head -n 1 "$CODEX/AGENTS.md")" "# My codex rules" "AGENTS.md first line"
+  assert_grep "$CODEX/AGENTS.md" "Be nice."
+  assert_eq "$(count_of "$CODEX/AGENTS.md" '<!-- agentkit:start -->')" 1 "AGENTS.md start markers"
+  assert_eq "$(count_of "$CODEX/AGENTS.md" '<!-- agentkit:end -->')" 1 "AGENTS.md end markers"
+  assert_grep "$CODEX/AGENTS.md" "# Multi-agent workflow (agentkit)"
+  assert_nofile "$CODEX/CLAUDE.md"
+  # the three shared skills, and only those
+  for n in agent-report security-audit write-swift; do
+    diff -rq -x .DS_Store -x '*.pyc' "$AKH/skills/$n" "$CODEX/skills/$n" > "$T/.diff" 2>&1 || fail "skill $n differs: $(cat "$T/.diff")"
+  done
+  assert_eq "$(ls "$CODEX/skills" | wc -l | tr -d ' ')" 3 "skills copied to codex"
+  # manifest
+  assert_jtrue "$CODEX/agentkit/manifest.json" "d['agentkit_version'] == '$(tr -d '[:space:]' < "$AKH/VERSION")' and 'agents/backend.toml' in d['files'] and 'skills/write-swift/SKILL.md' in d['files'] and not any(k.endswith('.md') and k.startswith('agents/') for k in d['files'])"
+  assert_jtrue "$CODEX/agentkit/manifest.json" "d['files']['agents/backend.toml'] == '$(sha_of "$CODEX/agents/backend.toml")'"
+  # backups of the two files that were changed
+  [ -n "$(find "$CODEX/agentkit/backups" -name config.toml 2> /dev/null)" ] || fail "no config.toml backup"
+  [ -n "$(find "$CODEX/agentkit/backups" -name AGENTS.md 2> /dev/null)" ] || fail "no AGENTS.md backup"
+  assert_eq "$(ls -A "$TMPDIR" | wc -l | tr -d ' ')" 0 "temp files left: $(ls -A "$TMPDIR" | tr '\n' ' ')"
+}
+
+t_codex_install_idempotent() {
+  setup_home
+  mk_codex
+  install_codex
+  assert_rc 0 "first install"
+  local before
+  before="$(snap "$HOME")"
+  install_codex
+  assert_rc 0 "second install"
+  assert_contains "0 added, 0 updated"
+  assert_contains "config.toml: block already up to date"
+  assert_contains "AGENTS.md: block already up to date"
+  assert_not_contains "agents/backend.toml"
+  assert_eq "$(snap "$HOME")" "$before" "second install changed files"
+  assert_eq "$(count_of "$CODEX/config.toml" '# agentkit:start')" 1 "config.toml start markers after two installs"
+  assert_eq "$(count_of "$CODEX/AGENTS.md" '<!-- agentkit:start -->')" 1 "AGENTS.md start markers after two installs"
+}
+
+t_codex_install_dry_run() {
+  setup_home
+  mk_codex
+  mkdir -p "$CODEX"
+  printf 'model = "x"\n' > "$CODEX/config.toml"
+  local before
+  before="$(snap "$HOME")"
+  run "$AK" install --target codex --dry-run --skip gstack --skip karpathy
+  assert_rc 0 "codex dry run"
+  assert_contains "(dry run: nothing is written)"
+  assert_contains "[dry-run] copy agents/backend.toml"
+  assert_contains "[dry-run] config.toml: added agentkit block"
+  assert_eq "$(snap "$HOME")" "$before" "codex dry run changed files"
+}
+
+t_codex_config_agent_conflict() {
+  setup_home
+  mk_codex
+  mkdir -p "$CODEX"
+  printf '[agents.backend]\ndescription = "my backend"\nconfig_file = "/mine/backend.toml"\n' > "$CODEX/config.toml"
+  install_codex
+  assert_rc 0 "install with a conflicting [agents.backend]"
+  assert_contains "config.toml already defines agent(s) outside the agentkit markers: backend"
+  assert_contains "Those are skipped"
+  # The user's table is untouched and the only one for backend.
+  assert_eq "$(head -n 3 "$CODEX/config.toml")" "$(printf '[agents.backend]\ndescription = "my backend"\nconfig_file = "/mine/backend.toml"')" "user table changed"
+  assert_eq "$(count_of "$CODEX/config.toml" '^\[agents\.backend\]')" 1 "[agents.backend] tables"
+  assert_nofile "$CODEX/agents/backend.toml"
+  assert_jtrue "$CODEX/agentkit/manifest.json" "'agents/backend.toml' not in d['files'] and 'agents/frontend.toml' in d['files']"
+  assert_file "$CODEX/agents/frontend.toml"
+  assert_grep "$CODEX/config.toml" "[agents.frontend]"
+  # Once the user table is gone, a new install brings the agent in.
+  printf 'model = "x"\n' > "$CODEX/config.toml"
+  install_codex
+  assert_rc 0 "install after removing the conflict"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_grep "$CODEX/config.toml" "[agents.backend]"
+}
+
+t_codex_foreign_agent_file() {
+  setup_home
+  mk_codex
+  mkdir -p "$CODEX/agents"
+  echo "my backend agent" > "$CODEX/agents/backend.toml"
+  install_codex
+  assert_rc 0 "install with a foreign agents/backend.toml"
+  assert_contains "Codex agent(s) backend not installed"
+  assert_contains "exists and is not managed by agentkit. Use --force"
+  assert_eq "$(cat "$CODEX/agents/backend.toml")" "my backend agent" "foreign agent file changed"
+  # Not registered either, so config.toml never points at the foreign file.
+  assert_nogrep "$CODEX/config.toml" "[agents.backend]"
+  assert_nogrep "$CODEX/config.toml" "agents/backend.toml"
+  assert_grep "$CODEX/config.toml" "[agents.frontend]"
+  assert_file "$CODEX/agents/frontend.toml"
+  assert_jtrue "$CODEX/agentkit/manifest.json" "'agents/backend.toml' not in d['files']"
+  # A second install says the same and still leaves it alone.
+  install_codex
+  assert_contains "Codex agent(s) backend not installed"
+  assert_eq "$(cat "$CODEX/agents/backend.toml")" "my backend agent" "foreign agent file changed by a second install"
+  # Uninstall leaves it alone.
+  run "$AK" uninstall --target codex --yes
+  assert_rc 0 "uninstall"
+  assert_eq "$(cat "$CODEX/agents/backend.toml")" "my backend agent" "foreign agent file removed by uninstall"
+  # --force: back up, replace, register.
+  install_codex --force
+  assert_rc 0 "install --force"
+  assert_not_contains "not installed"
+  assert_grep "$CODEX/agents/backend.toml" "developer_instructions = "
+  assert_grep "$CODEX/config.toml" "[agents.backend]"
+  assert_eq "$(cat "$(find "$CODEX/agentkit/backups" -path '*agents/backend.toml' | head -n 1)")" "my backend agent" "backup content"
+  assert_jtrue "$CODEX/agentkit/manifest.json" "'agents/backend.toml' in d['files']"
+  # An identical file we wrote earlier (manifest lost) is adopted without a warning.
+  rm -f "$CODEX/agentkit/manifest.json"
+  install_codex
+  assert_rc 0 "install with the manifest gone"
+  assert_not_contains "not installed"
+  assert_jtrue "$CODEX/agentkit/manifest.json" "'agents/backend.toml' in d['files']"
+}
+
+t_codex_config_declined() {
+  setup_home
+  mk_codex
+  # No --yes and no terminal: the agent files are copied, config.toml is not touched.
+  run "$AK" install --target codex --skip gstack --skip karpathy
+  assert_rc 0 "install without consent"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_nofile "$CODEX/config.toml"
+  assert_nofile "$CODEX/AGENTS.md"
+  assert_match '^  ! config.toml: skipped$' "config.toml result line"
+  assert_contains "the agent files in $CODEX/agents are not registered in config.toml; codex doctor will warn about them"
+  assert_match '^codex +config.toml +skipped$' "config.toml row"
+  # update does not add a block the user never accepted.
+  run "$AK" update
+  assert_rc 0 "update"
+  assert_nofile "$CODEX/config.toml"
+  assert_nofile "$CODEX/AGENTS.md"
+}
+
+t_codex_config_unusable() {
+  setup_home
+  mk_codex
+  mkdir -p "$CODEX"
+  printf '# agentkit:start\n[agents.x]\n' > "$CODEX/config.toml"
+  install_codex
+  assert_rc 0 "install with a half marker in config.toml"
+  assert_contains "cannot use $CODEX/config.toml"
+  assert_eq "$(cat "$CODEX/config.toml")" "$(printf '# agentkit:start\n[agents.x]')" "broken config.toml was changed"
+  assert_contains "config.toml: no agents registered"
+}
+
+t_codex_doctor() {
+  setup_home
+  mk_codex
+  install_codex
+  assert_rc 0 "install"
+  run "$AK" doctor --target codex
+  assert_rc 0 "doctor after install"
+  assert_contains "target codex: $CODEX"
+  assert_not_contains "target claude"
+  assert_contains "  ok    agent backend"
+  assert_contains "  ok    skill write-swift"
+  assert_contains "  ok    config.toml agents block"
+  assert_contains "  ok    AGENTS.md block"
+  assert_contains "all required checks passed"
+  assert_not_contains "SubagentStop"
+  # A missing agent file fails the doctor.
+  rm "$CODEX/agents/backend.toml"
+  run "$AK" doctor --target codex
+  assert_rc_nz "doctor with a missing agent file"
+  assert_contains "agent backend: missing"
+  # An edited one only warns.
+  install_codex --force
+  echo "# mine" >> "$CODEX/agents/backend.toml"
+  run "$AK" doctor --target codex
+  assert_rc 0 "doctor with an edited agent file"
+  assert_contains "agent backend: modified"
+  # A removed block only warns.
+  "$PY" -I "$AKH/lib/codex.py" config-del "$CODEX/config.toml" write > /dev/null
+  run "$AK" doctor --target codex
+  assert_rc 0 "doctor without the config block"
+  assert_contains "config.toml agents block not present"
+  # Not installed at all.
+  rm -rf "$CODEX"
+  run "$AK" doctor --target codex
+  assert_rc_nz "doctor without an install"
+  assert_contains "not installed in $CODEX"
+}
+
+t_codex_update_prunes() {
+  setup_home
+  mk_codex
+  install_codex
+  assert_rc 0 "install"
+  echo "# my edit" >> "$CODEX/agents/backend.toml"
+  upstream 'echo "<!-- upstream -->" >> agents/frontend.md
+    git rm -q agents/seo.md
+    printf -- "---\nname: newagent\ndescription: a new one\ntools: Read\nmodel: sonnet\n---\nbody\n" > agents/newagent.md
+    echo "upstream snippet line" >> templates/AGENTS.md.snippet'
+  run "$AK" update
+  assert_rc 0 "update"
+  assert_contains "$CODEX"
+  assert_not_contains "$CLAUDE"
+  assert_contains "  + agents/frontend.toml (updated)"
+  assert_contains "  + agents/newagent.toml"
+  assert_contains "  + agents/seo.toml (removed upstream)"
+  assert_contains "  ! kept your edited agents/backend.toml"
+  assert_grep "$CODEX/agents/frontend.toml" "<!-- upstream -->"
+  assert_file "$CODEX/agents/newagent.toml"
+  assert_nofile "$CODEX/agents/seo.toml"
+  assert_grep "$CODEX/agents/backend.toml" "# my edit"
+  assert_file "$CODEX/agents/backend.toml.agentkit-new"
+  # the block follows the agent set
+  assert_grep "$CODEX/config.toml" "[agents.newagent]"
+  assert_nogrep "$CODEX/config.toml" "[agents.seo]"
+  assert_nogrep "$CODEX/config.toml" "seo.toml"
+  assert_eq "$(count_of "$CODEX/config.toml" '# agentkit:start')" 1 "config.toml start markers"
+  assert_grep "$CODEX/AGENTS.md" "upstream snippet line"
+  assert_jtrue "$CODEX/agentkit/manifest.json" "'agents/newagent.toml' in d['files'] and 'agents/seo.toml' not in d['files']"
+  assert_nofile "$CLAUDE"
+  # a second update has nothing new to say about files
+  run "$AK" update
+  assert_rc 0 "second update"
+  assert_contains "0 added, 0 updated"
+  assert_not_contains "(removed upstream)"
+  assert_not_contains "(updated)"
+  assert_contains "config.toml: block already up to date"
+}
+
+t_codex_update_user_removed_block_stays() {
+  setup_home
+  mk_codex
+  install_codex
+  "$PY" -I "$AKH/lib/codex.py" config-del "$CODEX/config.toml" write > /dev/null
+  rm -f "$CODEX/config.toml.empty"
+  local before
+  before="$(snap "$CODEX")"
+  run "$AK" update
+  assert_rc 0 "update"
+  assert_nogrep "$CODEX/config.toml" "agentkit:start"
+  assert_eq "$(snap "$CODEX")" "$before" "update re-added files or blocks the user removed"
+}
+
+t_codex_uninstall_restores_originals() {
+  setup_home
+  mk_codex
+  mkdir -p "$CODEX"
+  printf 'model = "x"\n\n[mcp_servers.foo]\ncommand = "foo"\n' > "$CODEX/config.toml"
+  printf '# mine\nrules\n' > "$CODEX/AGENTS.md"
+  cp "$CODEX/config.toml" "$T/config.orig"
+  cp "$CODEX/AGENTS.md" "$T/agents-md.orig"
+  install_codex
+  assert_rc 0 "install"
+  assert_grep "$CODEX/config.toml" "agentkit:start"
+  run "$AK" uninstall --target codex --yes
+  assert_rc 0 "uninstall"
+  assert_contains "config.toml: removed agentkit block"
+  assert_contains "AGENTS.md: removed agentkit block"
+  assert_same "$CODEX/config.toml" "$T/config.orig"
+  assert_same "$CODEX/AGENTS.md" "$T/agents-md.orig"
+  assert_nofile "$CODEX/agents"
+  assert_nofile "$CODEX/skills"
+  assert_nofile "$CODEX/agentkit/manifest.json"
+  [ -d "$CODEX/agentkit/backups" ] || fail "backups folder should be kept"
+  # Files that did not exist before are gone again.
+  rm -rf "$CODEX"
+  install_codex
+  run "$AK" uninstall --target codex --yes
+  assert_rc 0 "uninstall of a fresh install"
+  assert_nofile "$CODEX/config.toml"
+  assert_nofile "$CODEX/AGENTS.md"
+  assert_nofile "$CODEX/agents"
+  # An edited agent file stays, and so does its folder.
+  install_codex
+  echo "# my edit" >> "$CODEX/agents/backend.toml"
+  run "$AK" uninstall --target codex --yes
+  assert_rc 0 "uninstall with an edited agent file"
+  assert_contains "Kept because you edited them"
+  assert_grep "$CODEX/agents/backend.toml" "# my edit"
+  assert_eq "$(ls "$CODEX/agents" | wc -l | tr -d ' ')" 1 "agent files left"
+  assert_nogrep "$CODEX/config.toml" "agentkit:start"
+}
+
+# Files without a final newline: uninstall should give back the original bytes. Today it leaves a "\n" behind.
+t_codex_uninstall_restores_no_trailing_newline() {
+  setup_home
+  mk_codex
+  mkdir -p "$CODEX"
+  printf 'model = "x"' > "$CODEX/config.toml"
+  printf '# mine' > "$CODEX/AGENTS.md"
+  cp "$CODEX/config.toml" "$T/config.orig"
+  cp "$CODEX/AGENTS.md" "$T/agents-md.orig"
+  install_codex
+  assert_rc 0 "install"
+  run "$AK" uninstall --target codex --yes
+  assert_rc 0 "uninstall"
+  assert_same "$CODEX/config.toml" "$T/config.orig"
+  assert_same "$CODEX/AGENTS.md" "$T/agents-md.orig"
+}
+
+t_codex_uninstall_keeps_other_target() {
+  setup_home
+  mk_codex
+  install_codex
+  install_user
+  assert_rc 0 "claude install"
+  run "$AK" uninstall --target codex --yes
+  assert_rc 0 "uninstall --target codex"
+  assert_nofile "$CODEX/agents/backend.toml"
+  assert_file "$CLAUDE/agents/backend.md"
+  assert_file "$CLAUDE/CLAUDE.md"
+  assert_eq "$(n_src "$CLAUDE/settings.json" SubagentStop agentkit-agent-log)" 1 "claude hook entries"
+  assert_not_contains "settings.json"
+  run "$AK" doctor
+  assert_not_contains "target codex"
+  assert_contains "target claude"
+}
+
+t_codex_home_default_is_dot_codex() {
+  setup_home
+  mk_codex
+  unset CODEX_HOME
+  install_codex
+  assert_rc 0 "install with CODEX_HOME unset"
+  assert_file "$HOME/.codex/agents/backend.toml"
+  assert_file "$HOME/.codex/agentkit/manifest.json"
+}
+
+# ------------------------------------------------------------------ bootstrap script
+t_install_sh_requirements_block_matches_lib() {
+  local a="$T/block.install" b="$T/block.lib"
+  sed -n '/^# >>> agentkit:requirements$/,/^# <<< agentkit:requirements$/p' "$ROOT/install.sh" > "$a"
+  sed -n '/^# >>> agentkit:requirements$/,/^# <<< agentkit:requirements$/p' "$ROOT/lib/requirements.sh" > "$b"
+  [ "$(wc -l < "$a" | tr -d ' ')" -gt 50 ] || fail "install.sh has no requirements block"
+  [ "$(wc -l < "$b" | tr -d ' ')" -gt 50 ] || fail "lib/requirements.sh has no requirements block"
+  cmp -s "$a" "$b" || fail "install.sh block differs from lib/requirements.sh: $(diff "$a" "$b" | head -n 10 | tr '\n' '|')"
+  assert_eq "$(grep -c '^# >>> agentkit:requirements$' "$ROOT/install.sh")" 1 "start markers in install.sh"
+  assert_eq "$(grep -c '^# <<< agentkit:requirements$' "$ROOT/install.sh")" 1 "end markers in install.sh"
+}
+
+# A brew stub: logs every call; `brew install codex` makes a codex stub appear on PATH.
+mk_brew() {
+  export T_BREW_LOG="$T/brew.log" T_STUBS="$T/stubs"
+  cat > "$T/stubs/brew" <<'EOF'
+#!/bin/sh
+echo "brew $*" >> "$T_BREW_LOG"
+if [ "$1 $2" = "install codex" ]; then
+  printf '#!/bin/sh\nexit 0\n' > "$T_STUBS/codex"
+  chmod +x "$T_STUBS/codex"
+fi
+exit 0
+EOF
+  chmod +x "$T/stubs/brew"
+}
+
+# ------------------------------------------------------------------ requirements per target
+t_requirements_target_claude() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_brew; mk_curl
+  # codex is on PATH but claude is not: --target claude needs claude, and never installs codex.
+  mk_codex
+  run "$AK" install --target claude --yes --skip gstack --skip karpathy
+  assert_rc_nz "--target claude without claude"
+  assert_match '^  x claude +not found, required' "claude row"
+  assert_match '^  \+ codex ' "codex row"
+  assert_contains "requirements are not met"
+  assert_nofile "$T/curl.log"
+  assert_nofile "$T/brew.log"
+  assert_nofile "$CLAUDE"
+  # codex missing too: still no codex install for --target claude
+  rm -f "$T/stubs/codex"
+  run "$AK" install --target claude --yes --skip gstack --skip karpathy
+  assert_rc_nz "--target claude without any CLI"
+  assert_match '^  x codex +not found, optional \(not needed for this target\)' "codex row"
+  assert_not_contains "brew install codex"
+  assert_nofile "$T/brew.log"
+  assert_nofile "$T/curl.log"
+  assert_nofile "$T/stubs/codex"
+  # claude present: fine, codex is optional
+  printf '#!/bin/sh\nexit 0\n' > "$T/stubs/claude"; chmod +x "$T/stubs/claude"
+  run "$AK" install --target claude --yes --skip gstack --skip karpathy
+  assert_rc 0 "--target claude with claude"
+  assert_file "$CLAUDE/agents/backend.md"
+  assert_nofile "$CODEX"
+  assert_nofile "$T/brew.log"
+}
+
+t_requirements_target_codex() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_brew; mk_curl
+  # --yes with a package manager installs codex, and only codex; no remote script runs.
+  run "$AK" install --target codex --yes --skip gstack --skip karpathy
+  assert_rc 0 "--target codex with brew"
+  assert_match '^  x codex +not found, required' "codex row"
+  assert_match '^  x claude +not found, optional \(not needed for this target\)' "claude row"
+  assert_contains "Running: brew install codex"
+  assert_grep "$T/brew.log" "brew install codex"
+  assert_eq "$(nlines "$T/brew.log")" 1 "brew calls"
+  assert_nofile "$T/curl.log"
+  assert_file "$T/stubs/codex"
+  assert_nofile "$T/stubs/claude"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_nofile "$CLAUDE"
+  # Without --yes and without a terminal, brew is not run.
+  rm -f "$T/stubs/codex" "$T/brew.log"
+  rm -rf "$CODEX"
+  run "$AK" install --target codex --skip gstack --skip karpathy
+  assert_rc_nz "--target codex, no consent"
+  assert_contains "No TTY: not running. Command: brew install codex"
+  assert_nofile "$T/brew.log"
+  assert_nofile "$CODEX"
+}
+
+t_requirements_target_both() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_brew; mk_curl
+  # both needs both: codex comes from brew, claude is a remote script that --yes never runs.
+  run "$AK" install --target both --yes --skip gstack --skip karpathy
+  assert_rc_nz "--target both without claude"
+  assert_contains "Running: brew install codex"
+  assert_contains "No TTY: not running a remote script"
+  assert_nofile "$T/curl.log"
+  assert_match '^  x claude +not found, required' "claude row"
+  assert_nofile "$CLAUDE"
+  assert_nofile "$CODEX/agents/backend.toml"
+  assert_nofile "$CODEX/config.toml"
+  # Both present: installs both.
+  printf '#!/bin/sh\nexit 0\n' > "$T/stubs/claude"; chmod +x "$T/stubs/claude"
+  run "$AK" install --target both --yes --skip gstack --skip karpathy
+  assert_rc 0 "--target both with both CLIs"
+  assert_file "$CLAUDE/agents/backend.md"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_eq "$(nlines "$T/brew.log")" 1 "brew calls"
+  assert_nofile "$T/curl.log"
+}
+
+t_requirements_auto_installs_only_what_it_may() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_brew; mk_curl
+  # No --target, no CLI, --yes: claude would need a remote script (never run), codex comes from brew.
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "auto with brew"
+  assert_nofile "$T/curl.log"
+  assert_grep "$T/brew.log" "brew install codex"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_nofile "$CLAUDE"
+}
+
+t_requirements_install_sh_target_and_quiet() {
+  setup_home
+  rm -f "$T/stubs/claude"
+  mk_brew; mk_curl
+  # install.sh reads --target / --target= for the requirements and passes it on.
+  run bash "$AKH/install.sh" --target codex --yes --skip gstack --skip karpathy
+  assert_rc 0 "install.sh --target codex"
+  assert_match '^  x claude +not found, optional \(not needed for this target\)' "claude row"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_nofile "$CLAUDE"
+  assert_nofile "$T/curl.log"
+  rm -rf "$CODEX" "$T/stubs/codex" "$T/brew.log"
+  run bash "$AKH/install.sh" --target=claude --yes --skip gstack --skip karpathy
+  assert_rc_nz "install.sh --target=claude without claude"
+  assert_match '^  x claude +not found, required' "claude row"
+  assert_nofile "$T/brew.log"
+  run bash "$AKH/install.sh" --target bogus --yes
+  assert_rc_nz "install.sh with a bad target"
+  assert_contains "--target: unknown value 'bogus'"
+  run bash "$AKH/install.sh" --target
+  assert_rc_nz "install.sh with --target and no value"
+  assert_contains "--target needs claude, codex or both"
+  # -q is --quiet: nothing is printed on success, errors still print.
+  printf '#!/bin/sh\nexit 0\n' > "$T/stubs/claude"; chmod +x "$T/stubs/claude"
+  PATH="$HOME/.local/bin:$PATH" run bash "$AKH/install.sh" -q --yes --skip gstack --skip karpathy --skip hooks
+  assert_rc 0 "install.sh -q"
+  assert_eq "$OUT" "" "install.sh -q printed something"
+  assert_file "$CLAUDE/agents/backend.md"
+  rm -f "$T/stubs/claude" "$T/stubs/brew" "$T/stubs/codex"
+  PATH="$HOME/.local/bin:$PATH" run bash "$AKH/install.sh" --quiet --yes --skip gstack --skip karpathy
+  assert_rc_nz "install.sh --quiet without a CLI"
+  assert_contains "requirements are not met"
+}
+
+t_requirements_doctor_target() {
+  setup_home
+  mk_codex
+  install_codex
+  rm -f "$T/stubs/claude"
+  run "$AK" doctor --target codex
+  assert_rc 0 "doctor --target codex without claude"
+  assert_match '^  x claude +not found, optional \(not needed for this target\)' "claude row"
+  rm -f "$T/stubs/codex"
+  run "$AK" doctor --target codex
+  assert_rc_nz "doctor --target codex without codex"
+  assert_match '^  x codex +not found, required' "codex row"
+}
+
+# ------------------------------------------------------------------ quiet and hook preview
+t_quiet_still_shows_hook_preview_before_a_prompt() {
+  setup_home
+  # --quiet without --yes: a y/N prompt follows, so the entry is shown first.
+  run "$AK" install --quiet --skip gstack --skip karpathy
+  assert_rc 0 "quiet install without --yes"
+  assert_contains "settings.json: added this entry in $CLAUDE/settings.json:"
+  assert_contains '"_agentkit_source": "agentkit-agent-log"'
+  assert_nofile "$CLAUDE/settings.json"
+  # --yes: nothing is asked, nothing is shown.
+  run "$AK" install --quiet --yes --skip gstack --skip karpathy
+  assert_rc 0 "quiet install --yes"
+  assert_eq "$OUT" "" "quiet install --yes printed something"
+  assert_eq "$(n_src "$CLAUDE/settings.json" SubagentStop agentkit-agent-log)" 1 "hook entries"
+  # Without --quiet the entry is always shown.
+  rm -rf "$CLAUDE"
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_contains '"_agentkit_source": "agentkit-agent-log"'
+}
+
+# ------------------------------------------------------------------ codex rendering
+t_codex_rendered_agents_have_no_claude_paths() {
+  setup_home
+  mk_codex
+  install_codex
+  assert_rc 0 "install"
+  local f bad=""
+  for f in "$CODEX"/agents/*.toml; do
+    if grep -qF '.claude/' "$f"; then bad="$bad $(basename "$f")"; fi
+  done
+  assert_eq "$bad" "" "rendered agents that still mention .claude/"
+  # supervisor.md reads the agent definitions: it must point at the Codex ones.
+  assert_grep "$AKH/agents/supervisor.md" "~/.claude/agents/*.md"
+  assert_grep "$CODEX/agents/supervisor.toml" "~/.codex/agents/*.toml"
+  assert_nogrep "$CODEX/agents/supervisor.toml" "~/.claude"
+}
+
+t_codex_effort_values() {
+  setup_home
+  mk_codex
+  local e
+  # every allowed effort value is rendered as given
+  for e in low medium high xhigh max; do
+    printf -- '---\nname: eff-%s\ndescription: x\ntools: Read\nmodel: sonnet\neffort: %s\n---\nbody\n' "$e" "$e" > "$AKH/agents/eff-$e.md"
+  done
+  install_codex
+  assert_rc 0 "install with every effort value"
+  for e in low medium high xhigh max; do
+    assert_grep "$CODEX/agents/eff-$e.toml" "model_reasoning_effort = \"$e\""
+  done
+  # an unknown value is refused, and nothing is written
+  rm -rf "$CODEX"
+  rm -f "$AKH"/agents/eff-*.md
+  printf -- '---\nname: eff-bad\ndescription: x\ntools: Read\nmodel: sonnet\neffort: turbo\n---\nbody\n' > "$AKH/agents/eff-bad.md"
+  install_codex
+  assert_rc_nz "install with effort: turbo"
+  assert_contains "effort 'turbo' not one of low, medium, high, xhigh, max"
+  assert_contains "cannot render Codex agent eff-bad"
+  assert_eq "$(ls -A "$CODEX/agents" 2> /dev/null | wc -l | tr -d ' ')" 0 "agent files written despite the error"
+  assert_nofile "$CODEX/config.toml"
+  assert_nofile "$CODEX/agentkit/manifest.json"
+}
+
+# ------------------------------------------------------------------ symlinked instruction files
+t_symlinked_config_backup_is_a_copy() {
+  setup_home
+  mk_codex
+  mkdir -p "$CODEX" "$CLAUDE" "$T/dotfiles"
+  printf 'model = "x"\n' > "$T/dotfiles/config.toml"
+  printf '# my agents\n' > "$T/dotfiles/AGENTS.md"
+  printf '# my claude\n' > "$T/dotfiles/CLAUDE.md"
+  ln -s "$T/dotfiles/config.toml" "$CODEX/config.toml"
+  ln -s "$T/dotfiles/AGENTS.md" "$CODEX/AGENTS.md"
+  ln -s "$T/dotfiles/CLAUDE.md" "$CLAUDE/CLAUDE.md"
+  run "$AK" install --target both --yes --skip gstack --skip karpathy
+  assert_rc 0 "install over symlinked files"
+  # the links stay links, the block went into the real files
+  [ -L "$CODEX/config.toml" ] || fail "config.toml link was replaced"
+  [ -L "$CODEX/AGENTS.md" ] || fail "AGENTS.md link was replaced"
+  [ -L "$CLAUDE/CLAUDE.md" ] || fail "CLAUDE.md link was replaced"
+  assert_grep "$T/dotfiles/config.toml" "agentkit:start"
+  assert_grep "$T/dotfiles/AGENTS.md" "agentkit:start"
+  assert_grep "$T/dotfiles/CLAUDE.md" "agentkit:start"
+  # the backups are regular files with the old content
+  local b
+  for b in "$CODEX/agentkit/backups/*/config.toml:model = \"x\"" "$CODEX/agentkit/backups/*/AGENTS.md:# my agents" "$CLAUDE/agentkit/backups/*/CLAUDE.md:# my claude"; do
+    local pat="${b%%:*}" want="${b#*:}" found
+    found="$(find "$(dirname "$(dirname "$pat")")" -name "$(basename "$pat")" 2> /dev/null | head -n 1)"
+    { [ -n "$found" ] && [ -f "$found" ] && [ ! -L "$found" ]; } || { fail "backup of $(basename "$pat") is missing or a link (found: '$found')"; continue; }
+    assert_eq "$(cat "$found")" "$want" "backup content of $(basename "$pat")"
+  done
+  # uninstall writes through the links too
+  run "$AK" uninstall --target both --yes
+  assert_rc 0 "uninstall"
+  [ -L "$CODEX/config.toml" ] || fail "config.toml link was replaced by uninstall"
+  assert_eq "$(cat "$T/dotfiles/config.toml")" 'model = "x"' "config.toml after uninstall"
+  assert_eq "$(cat "$T/dotfiles/AGENTS.md")" "# my agents" "AGENTS.md after uninstall"
+}
+
 # ================================================================== runner
 ALL_TESTS="
 t_dry_run_writes_nothing
@@ -1063,11 +2255,56 @@ t_uninstall_keeps_user_agentlog_hook
 t_update_refreshes_marked_hooks
 t_install_existing_link
 t_claude_md_duplicate_heading_warns
+t_requirements_missing_agent_cli
+t_requirements_missing_git
+t_requirements_other_agent_is_enough
+t_requirements_dry_run_installs_nothing
+t_requirements_ok_skips_check_not_detection
+t_requirements_doctor
+t_output_plain_has_no_ansi
+t_output_terminal_color_and_no_color
+t_output_quiet
+t_output_quiet_install
+t_output_markers_and_table
+t_target_default_detection
+t_target_codex_only_cli
+t_target_explicit_without_cli
+t_target_both_install_and_uninstall
+t_target_project_with_codex_errors
+t_claude_only_commands_reject_codex
+t_gstack_dry_run_hosts
+t_codex_install
+t_codex_install_idempotent
+t_codex_install_dry_run
+t_codex_config_agent_conflict
+t_codex_foreign_agent_file
+t_codex_config_declined
+t_codex_config_unusable
+t_codex_doctor
+t_codex_update_prunes
+t_codex_update_user_removed_block_stays
+t_codex_uninstall_restores_originals
+t_codex_uninstall_restores_no_trailing_newline
+t_codex_uninstall_keeps_other_target
+t_codex_home_default_is_dot_codex
+t_install_sh_requirements_block_matches_lib
+t_requirements_target_claude
+t_requirements_target_codex
+t_requirements_target_both
+t_requirements_auto_installs_only_what_it_may
+t_requirements_install_sh_target_and_quiet
+t_requirements_doctor_target
+t_quiet_still_shows_hook_preview_before_a_prompt
+t_codex_rendered_agents_have_no_claude_paths
+t_codex_effort_values
+t_symlinked_config_backup_is_a_copy
+t_gstack_prompt_and_footer
+t_gstack_codex_setup_runs
 "
 
 # Tests that currently fail because of a bug in the code under test. They print XFAIL and do not fail
 # the run; when the bug is fixed they print XPASS and DO fail the run, so remove them from this list then.
-KNOWN_BUGS=" "
+KNOWN_BUGS=" t_codex_uninstall_restores_no_trailing_newline "
 
 PASSED=0 FAILED=0 XFAILED=0 FAILED_NAMES=""
 tests="${*:-$ALL_TESTS}"

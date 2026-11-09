@@ -1,0 +1,13 @@
+# Multi-agent workflow (agentkit)
+This section and "Agent management" apply to the main session only. If you are a subagent, skip them.
+For any task that changes code or has several steps (not quick questions or one-line edits), I authorize subagents, with this process:
+1. Run the supervisor agent in PLAN mode. It splits the task into parts and parallel waves. Skip the supervisor and do the task directly if it touches 3 files or fewer, in one area, with no schema or auth change. Say so in one line.
+2. Show me the plan: number of agents, waves, and what each agent does. Ask me the option for each part marked NEEDS_SKILL_CHOICE. If I pick shadcn, name package.json and the config files in the assignment. If a part needs an install, ask me to approve the packages, and write `Install approved: <packages>` in the assignment. Wait for my approval before you start any worker. I can change the plan.
+3. Start the approved workers as Codex subagents. Use the agent role that matches each part. Run parts in the same wave in parallel. Two parts never edit the same file.
+4. Send the original task, all worker reports and the base SHA (HEAD before step 3, if the project uses git) to the supervisor in REVIEW mode.
+5. For each FIX, send it to the worker that owns the part. Send it to the same subagent thread if it is still open. If it is closed, start a new subagent with the same role. Give it the earlier report and the FIX. Then run REVIEW again. Stop after 2 rounds and report what is open.
+6. Tell me the result, the verdict, and anything unresolved.
+Pick agent roles by task: backend, frontend, mobile, design, marketing, writing, security, seo, devops, docs, database, researcher, tester, debugger, planner (PRDs and plans).
+
+# Agent management (agentkit)
+The shared agent roles are installed by agentkit. Each role has an [agents.*] entry in ~/.codex/config.toml and a file in ~/.codex/agents. `agentkit update` replaces files that I did not change, and keeps files that I changed. When I ask to add a new agent role or change one, do it in those places, in English, with the same format as the other roles. Show me the change first. Write it after I approve. Update the role list above when a role is added or removed.

@@ -218,11 +218,13 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 dry() { say "[dry-run] $*"; }
 skipped() { case "$SKIPS" in *" $1 "*) return 0 ;; esac; return 1; }
 
-QUIET=0 DRY=0 YES=0 FORCE=0 PURGE=0 PROJECT="" SKIPS=" "
+QUIET=0 DRY=0 YES=0 FORCE=0 PURGE=0 PROJECT="" SKIPS=" " TARGET_OPT="" TARGETS="" CUR=""
 TS="$(date +%Y%m%d-%H%M%S)"
 WORK=""
 cleanup() { if [ -n "$WORK" ] && [ -d "$WORK" ]; then rm -rf "${WORK:?}"; fi; }
-trap cleanup EXIT
+# ui_spin clears INT/TERM/EXIT traps on return, so re-arm after every spin.
+arm_traps() { trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; }
+arm_traps
 # One work dir per run, made in the main shell, removed on exit. Not made for 'log' (it uses exec).
 init_work() {
   [ -n "$WORK" ] && return 0
@@ -255,10 +257,26 @@ resolve_home() {
 resolve_home
 AGENTKIT_REPO="${AGENTKIT_REPO:-https://github.com/IbrahimHosseini/agentkit.git}"
 CLAUDE_HOME="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 VERSION_FILE="$AGENTKIT_HOME/VERSION"
 version() {
   if [ -f "$VERSION_FILE" ]; then tr -d '[:space:]' < "$VERSION_FILE"; else echo unknown; fi
 }
+cpy() { python3 -I "$AGENTKIT_HOME/lib/codex.py" "$@"; }
+
+# UI and requirements libraries. version and help work without them.
+case "${1:-help}" in
+  version | --version | -v | help | --help | -h) ;;
+  *)
+    for _lib in ui.sh requirements.sh; do
+      [ -f "$AGENTKIT_HOME/lib/$_lib" ] || die "AGENTKIT_HOME not found or incomplete: missing $AGENTKIT_HOME/lib/$_lib"
+      # shellcheck source=/dev/null
+      . "$AGENTKIT_HOME/lib/$_lib"
+    done
+    ;;
+esac
+# ui_spin's INT/TERM handler exits without our cleanup; replace it so the work dir is removed too.
+ui__spin_sig() { ui__spin_stop; trap - INT TERM EXIT; cleanup; exit "$1"; }
 
 # y/N prompt. --yes answers yes. No tty and no --yes: answer no and say so.
 ask() {
@@ -284,6 +302,8 @@ parse_args() {
       --force) FORCE=1 ;;
       --quiet) QUIET=1 ;;
       --purge) PURGE=1 ;;
+      --target) [ $# -ge 2 ] || die "--target needs claude, codex or both"; set_target_opt "$2"; shift ;;
+      --target=*) set_target_opt "${1#--target=}" ;;
       --skip)
         [ $# -ge 2 ] || die "--skip needs a value"
         add_skip "$2"; shift ;;
@@ -293,6 +313,9 @@ parse_args() {
     shift
   done
 }
+set_target_opt() {
+  case "$1" in claude | codex | both) TARGET_OPT="$1" ;; *) die "--target: unknown value '$1' (claude|codex|both)" ;; esac
+}
 add_skip() {
   case "$1" in gstack | karpathy | claude-md | hooks | skills) SKIPS="$SKIPS$1 " ;; *) die "--skip: unknown step '$1' (gstack|karpathy|claude-md|hooks|skills)" ;; esac
 }
@@ -301,21 +324,75 @@ need_python() {
   python3 -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2> /dev/null || die "python3 >= 3.9 is required"
 }
 
+# Work dir and --project check, then the Claude paths (for claude-only commands).
 resolve_target() {
   init_work
   if [ -n "$PROJECT" ]; then
     [ -d "$PROJECT" ] || die "project directory not found: $PROJECT"
     PROJECT="$(cd "$PROJECT" && pwd)"
-    TARGET="$PROJECT/.claude"
-    CLAUDE_MD="$PROJECT/CLAUDE.md"
-  else
-    TARGET="$CLAUDE_HOME"
-    CLAUDE_MD="$CLAUDE_HOME/CLAUDE.md"
   fi
-  SETTINGS="$TARGET/settings.json"
+  set_target claude
+}
+
+# Point TARGET, STATE, MANIFEST and the instruction file at one target (claude or codex).
+set_target() {
+  CUR="$1"
+  if [ "$1" = codex ]; then
+    TARGET="$CODEX_HOME"
+    SETTINGS=""
+    INSTR_MD="$CODEX_HOME/AGENTS.md"
+    INSTR_SNIP="$AGENTKIT_HOME/templates/AGENTS.md.snippet"
+    INSTR_LABEL="AGENTS.md"
+  else
+    if [ -n "$PROJECT" ]; then
+      TARGET="$PROJECT/.claude"
+      INSTR_MD="$PROJECT/CLAUDE.md"
+    else
+      TARGET="$CLAUDE_HOME"
+      INSTR_MD="$CLAUDE_HOME/CLAUDE.md"
+    fi
+    SETTINGS="$TARGET/settings.json"
+    INSTR_SNIP="$AGENTKIT_HOME/templates/CLAUDE.md.snippet"
+    INSTR_LABEL="CLAUDE.md"
+  fi
   STATE="$TARGET/agentkit"
   MANIFEST="$STATE/manifest.json"
   BACKUP_DIR="$STATE/backups/$TS"
+}
+
+# Choose TARGETS. install: the CLIs found (REQ_HAVE_*). Others: every target with a manifest.
+select_targets() { # install | other
+  local t
+  TARGETS=""
+  if [ -n "$PROJECT" ]; then
+    case "$TARGET_OPT" in codex | both) die "--project with codex is not supported in 0.2.0" ;; esac
+    TARGETS=claude
+  elif [ -n "$TARGET_OPT" ]; then
+    case "$TARGET_OPT" in both) TARGETS="claude codex" ;; *) TARGETS="$TARGET_OPT" ;; esac
+    if [ "$1" = install ]; then
+      for t in $TARGETS; do
+        case "$t:${REQ_HAVE_CLAUDE:-0}:${REQ_HAVE_CODEX:-0}" in
+          claude:0:* | codex:*:0) warn "$t CLI not found; installing for --target $TARGET_OPT anyway" ;;
+        esac
+      done
+    fi
+  elif [ "$1" = install ]; then
+    [ "${REQ_HAVE_CLAUDE:-0}" = 1 ] && TARGETS=claude
+    [ "${REQ_HAVE_CODEX:-0}" = 1 ] && TARGETS="$TARGETS codex"
+  else
+    for t in claude codex; do
+      set_target "$t"
+      if [ -f "$MANIFEST" ] || { [ "$1" = uninstall ] && [ -d "$STATE" ]; }; then TARGETS="$TARGETS $t"; fi
+    done
+  fi
+  TARGETS="${TARGETS# }"
+  [ -n "$TARGETS" ] || TARGETS=claude
+  set_target "${TARGETS%% *}"
+}
+
+claude_only() { # command name
+  [ "$TARGET_OPT" = codex ] && die "$1 is only for the claude target"
+  return 0
 }
 
 # Back up a file or symlink into the state dir before it is changed or removed.
@@ -325,12 +402,19 @@ backup() {
   case "$f" in "$TARGET"/*) rel="${f#"$TARGET"/}" ;; "$PROJECT"/*) rel="${f#"$PROJECT"/}" ;; *) rel="$(basename "$f")" ;; esac
   dest="$BACKUP_DIR/$rel"
   if [ "$DRY" = 1 ]; then dry "back up $f -> $dest"; return 0; fi
-  mkdir -p "$(dirname "$dest")" && cp -PpR "$f" "$dest" || die "backup of $f failed"
+  # A symlinked file is backed up as a copy of its content, not as a link. Folders keep -P.
+  if [ -L "$f" ] && [ -f "$f" ]; then
+    mkdir -p "$(dirname "$dest")" && cp -pL "$f" "$dest" || die "backup of $f failed"
+  else
+    mkdir -p "$(dirname "$dest")" && cp -PpR "$f" "$dest" || die "backup of $f failed"
+  fi
 }
 
 # ---------------------------------------------------------------- file sync
 N_ADDED=0 N_UPDATED=0 N_SAME=0 N_KEPT=0 N_SKIPPED=0 N_REMOVED=0 N_FORCED=0
 NEW_FILES="" SKIP_LIST="" KEPT_LIST=""
+reset_counts() { N_ADDED=0 N_UPDATED=0 N_SAME=0 N_KEPT=0 N_SKIPPED=0 N_REMOVED=0 N_FORCED=0 NEW_FILES="" SKIP_LIST="" KEPT_LIST=""; }
+fitem() { [ "$DRY" = 1 ] || ui_item "$@"; } # per-file line (dry-run prints its own)
 
 old_hash() { awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$MF_OLD"; }
 record() { printf '%s\t%s\n' "$1" "$2" >> "$MF_NEW"; }
@@ -349,11 +433,11 @@ apply_file() { # rel src
   echo "$rel" >> "$SRC_LIST"
   if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
     if [ -n "$mh" ] && [ "$MODE" = update ]; then
-      say "  kept removed: $rel (you deleted it)"
+      ui_item skipped "kept removed: $rel (you deleted it)"
       record "$rel" "$mh"
       return
     fi
-    put_file "$src" "$dest"; record "$rel" "$s_src"; N_ADDED=$((N_ADDED + 1))
+    put_file "$src" "$dest"; record "$rel" "$s_src"; N_ADDED=$((N_ADDED + 1)); fitem installed "$rel"
     return
   fi
   cur="$(sha "$dest")"
@@ -363,18 +447,18 @@ apply_file() { # rel src
   fi
   if [ -n "$mh" ]; then
     if [ "$cur" = "$mh" ]; then
-      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_UPDATED=$((N_UPDATED + 1))
+      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_UPDATED=$((N_UPDATED + 1)); fitem installed "$rel (updated)"
     elif [ "$FORCE" = 1 ]; then
-      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_FORCED=$((N_FORCED + 1))
+      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_FORCED=$((N_FORCED + 1)); fitem installed "$rel (replaced)"
     else
       if [ "$DRY" = 1 ]; then dry "write $rel.agentkit-new (you edited $rel)"; else cp -p "$src" "$dest.agentkit-new"; fi
       record "$rel" "$mh"; N_KEPT=$((N_KEPT + 1))
       NEW_FILES="$NEW_FILES $dest.agentkit-new"
-      say "  kept your edited $rel; new version in $rel.agentkit-new"
+      ui_item skipped "kept your edited $rel; new version in $rel.agentkit-new"
     fi
   else
     if [ "$FORCE" = 1 ]; then
-      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_FORCED=$((N_FORCED + 1))
+      backup "$dest"; put_file "$src" "$dest"; record "$rel" "$s_src"; N_FORCED=$((N_FORCED + 1)); fitem installed "$rel (replaced)"
     else
       warn "$rel exists and is not managed by agentkit; skipped (use --force to replace, with backup)"
       N_SKIPPED=$((N_SKIPPED + 1)); SKIP_LIST="$SKIP_LIST $rel"
@@ -433,27 +517,45 @@ prune_removed() {
     [ -e "$dest" ] || [ -L "$dest" ] || continue
     if [ ! -L "$dest" ] && [ "$(sha "$dest")" = "$mh" ]; then
       if [ "$DRY" = 1 ]; then dry "remove $rel (removed upstream)"; else rm -f "$dest"; fi
-      N_REMOVED=$((N_REMOVED + 1))
+      N_REMOVED=$((N_REMOVED + 1)); fitem installed "$rel (removed upstream)"
     else
-      say "  kept $rel (removed upstream, but you edited it)"
+      ui_item skipped "kept $rel (removed upstream, but you edited it)"
       KEPT_LIST="$KEPT_LIST $rel"
     fi
   done < "$MF_OLD"
+}
+
+# Skills for the current target. Codex gets only the shared three.
+CODEX_SKILLS="agent-report security-audit write-swift"
+skill_names() {
+  local f n
+  if [ "$CUR" = codex ]; then
+    for n in $CODEX_SKILLS; do [ -f "$AGENTKIT_HOME/skills/$n/SKILL.md" ] && echo "$n"; done
+    return 0
+  fi
+  for f in "$AGENTKIT_HOME"/skills/*/; do
+    [ -f "$f/SKILL.md" ] && basename "$f"
+  done
+  return 0
 }
 
 apply_all() { # MODE=install|update
   local f n
   MF_OLD="$(mktmp)"; MF_NEW="$(mktmp)"; SRC_LIST="$(mktmp)"
   [ -f "$MANIFEST" ] && py mf-read "$MANIFEST" > "$MF_OLD"
-  for f in "$AGENTKIT_HOME"/agents/*.md; do
-    [ -f "$f" ] || continue
-    apply_file "agents/$(basename "$f")" "$f"
-  done
+  if [ "$CUR" = codex ]; then
+    for f in "$CODEX_RENDER"/*.toml; do # rendered by codex_prepare
+      [ -f "$f" ] || continue
+      apply_file "agents/$(basename "$f")" "$f"
+    done
+  else
+    for f in "$AGENTKIT_HOME"/agents/*.md; do
+      [ -f "$f" ] || continue
+      apply_file "agents/$(basename "$f")" "$f"
+    done
+  fi
   if ! skipped skills; then
-    for f in "$AGENTKIT_HOME"/skills/*/; do
-      [ -d "$f" ] || continue
-      n="$(basename "$f")"
-      [ -f "$f/SKILL.md" ] || continue
+    for n in $(skill_names); do
       apply_skill "$n"
     done
   else
@@ -471,8 +573,10 @@ write_manifest() {
 }
 
 summary() {
-  say ""
-  say "Files: $N_ADDED added, $N_UPDATED updated, $N_SAME unchanged, $N_FORCED replaced (--force), $N_REMOVED removed upstream"
+  local f k=unchanged
+  [ $((N_ADDED + N_UPDATED + N_FORCED + N_REMOVED)) -gt 0 ] && k=installed
+  ui_item "$k" "Files: $N_ADDED added, $N_UPDATED updated, $N_SAME unchanged, $N_FORCED replaced (--force), $N_REMOVED removed upstream"
+  ui_summary_add "$CUR" files "$N_ADDED added, $N_UPDATED updated, $N_SAME unchanged"
   if [ "$N_KEPT" -gt 0 ]; then
     say "Kept $N_KEPT edited file(s). New versions are next to them:"
     for f in $NEW_FILES; do say "  $f"; done
@@ -482,49 +586,56 @@ summary() {
   return 0
 }
 
-# ---------------------------------------------------------------- CLAUDE.md
-step_claude_md() { # mode: install (ask) | update (only if block present)
-  local snip="$AGENTKIT_HOME/templates/CLAUDE.md.snippet" st dup
-  skipped claude-md && { say "CLAUDE.md: skipped (--skip claude-md)"; return; }
-  [ -f "$snip" ] || { warn "template missing: $snip"; return; }
+# ---------------------------------------------------------------- CLAUDE.md / AGENTS.md
+step_claude_md() { # mode: install (ask) | update (only if block present). Works on INSTR_MD.
+  local st dup l="$INSTR_LABEL"
+  skipped claude-md && { ui_item skipped "$l: skipped (--skip claude-md)"; ui_summary_add "$CUR" "$l" skipped; return; }
+  [ -f "$INSTR_SNIP" ] || { warn "template missing: $INSTR_SNIP"; return; }
   if [ "$1" = update ]; then
-    py block-has "$CLAUDE_MD" 2> /dev/null || return 0
+    py block-has "$INSTR_MD" 2> /dev/null || return 0
   fi
-  st="$(py block-put "$CLAUDE_MD" "$snip" check)" || { warn "cannot edit $CLAUDE_MD"; return; }
-  if [ "$st" = unchanged ]; then say "CLAUDE.md: block already up to date"; return; fi
+  st="$(py block-put "$INSTR_MD" "$INSTR_SNIP" check)" || { warn "cannot edit $INSTR_MD"; return; }
+  if [ "$st" = unchanged ]; then ui_item unchanged "$l: block already up to date"; ui_summary_add "$CUR" "$l" unchanged; return; fi
   if [ "$1" = install ]; then
     dup=""
-    if py heading-outside "$CLAUDE_MD" 2> /dev/null; then
-      dup="WARNING: $CLAUDE_MD already has a '# Multi-agent workflow' section outside the agentkit markers; the block would duplicate it. "
-      say "$dup"
+    if py heading-outside "$INSTR_MD" 2> /dev/null; then
+      dup="WARNING: $INSTR_MD already has a '# Multi-agent workflow' section outside the agentkit markers; the block would duplicate it. "
+      ui_item skipped "$dup"
     fi
-    if [ "$DRY" = 1 ]; then dry "CLAUDE.md: $st agentkit block in $CLAUDE_MD"; return; fi
-    ask "${dup}Insert the agentkit workflow block into $CLAUDE_MD ($st)?" || { say "CLAUDE.md: skipped"; return; }
-  elif [ "$DRY" = 1 ]; then dry "CLAUDE.md: $st agentkit block"; return
+    if [ "$DRY" = 1 ]; then dry "$l: $st agentkit block in $INSTR_MD"; return; fi
+    ask "${dup}Insert the agentkit workflow block into $INSTR_MD ($st)?" || { ui_item skipped "$l: skipped"; ui_summary_add "$CUR" "$l" skipped; return; }
+  elif [ "$DRY" = 1 ]; then dry "$l: $st agentkit block"; return
   fi
-  backup "$CLAUDE_MD"
-  py block-put "$CLAUDE_MD" "$snip" write > /dev/null || { warn "cannot edit $CLAUDE_MD"; return; }
-  say "CLAUDE.md: $st block in $CLAUDE_MD"
+  backup "$INSTR_MD"
+  py block-put "$INSTR_MD" "$INSTR_SNIP" write > /dev/null || { warn "cannot edit $INSTR_MD"; return; }
+  ui_item installed "$l: $st block in $INSTR_MD"
+  ui_summary_add "$CUR" "$l" "$st"
 }
 
 # ---------------------------------------------------------------- settings.json hooks
-# hook_apply EVENT SOURCE COMMAND TIMEOUT QUESTION
+# hook_apply EVENT SOURCE COMMAND TIMEOUT QUESTION. Sets HOOK_RES (unchanged|skipped|failed|added|updated).
+HOOK_RES=""
 hook_apply() {
   local st
+  HOOK_RES=failed
   st="$(py hook-add "$SETTINGS" "$1" "$2" "$3" "$4" check)" || { warn "cannot read $SETTINGS (invalid JSON?); hook not added"; return 1; }
-  if [ "$st" = unchanged ]; then say "settings.json: $2 already present"; return 0; fi
-  say "settings.json: $st this entry in $SETTINGS:"
-  if [ "$st" = updated ]; then
-    say "  It replaces this existing entry:"
-    py hook-old "$SETTINGS" "$1" "$2" | sed 's/^/    /'
-    say "  with:"
+  if [ "$st" = unchanged ]; then ui_item unchanged "settings.json: $2 already present"; HOOK_RES=unchanged; return 0; fi
+  # Show the entry unless --quiet; but never hide it when a y/N prompt follows.
+  if [ "$QUIET" != 1 ] || { [ "$YES" != 1 ] && [ "$DRY" != 1 ]; }; then
+    printf 'settings.json: %s this entry in %s:\n' "$st" "$SETTINGS"
+    if [ "$st" = updated ]; then
+      printf '  It replaces this existing entry:\n'
+      py hook-old "$SETTINGS" "$1" "$2" | sed 's/^/    /'
+      printf '  with:\n'
+    fi
+    py hook-show "$1" "$2" "$3" "$4" | sed 's/^/    /'
   fi
-  py hook-show "$1" "$2" "$3" "$4" | sed 's/^/    /'
-  if [ "$DRY" = 1 ]; then dry "settings.json: $st $2"; return 0; fi
-  ask "$5" || { say "settings.json: skipped"; return 1; }
+  if [ "$DRY" = 1 ]; then dry "settings.json: $st $2"; HOOK_RES=dry; return 0; fi
+  ask "$5" || { ui_item skipped "settings.json: skipped"; HOOK_RES=skipped; return 1; }
   backup "$SETTINGS"
   py hook-add "$SETTINGS" "$1" "$2" "$3" "$4" write > /dev/null || { warn "cannot write $SETTINGS"; return 1; }
-  say "settings.json: $2 $st"
+  ui_item installed "settings.json: $2 $st"
+  HOOK_RES="$st"
 }
 
 hook_remove() { # prefix
@@ -541,55 +652,215 @@ hook_remove() { # prefix
 AGENTLOG_CMD() { printf 'python3 -I "%s/hooks/agent-log.py" check || true' "$AGENTKIT_HOME"; }
 
 step_hooks() {
-  skipped hooks && { say "hooks: skipped (--skip hooks)"; return; }
+  skipped hooks && { ui_item skipped "hooks: skipped (--skip hooks)"; ui_summary_add "$CUR" hooks skipped; return; }
   hook_apply SubagentStop agentkit-agent-log "$(AGENTLOG_CMD)" 20 "Add the SubagentStop agent-log hook to $SETTINGS?"
+  ui_summary_add "$CUR" "SubagentStop hook" "$HOOK_RES"
+}
+
+# ---------------------------------------------------------------- Codex config.toml
+# Render the agent files and the config block for Codex into WORK. Agents already defined by the
+# user outside our markers are left out (files and block) with a warning.
+codex_prepare() {
+  local f n msg rc ok mf dest foreign="" conflict=""
+  CODEX_RENDER="$WORK/codex-agents"; CODEX_BLOCK="$WORK/codex-block.toml"
+  ok="$WORK/codex-src-agents"; mf="$(mktmp)"
+  mkdir -p "$CODEX_RENDER" "$ok" || die "cannot create $CODEX_RENDER"
+  [ -f "$MANIFEST" ] && py mf-read "$MANIFEST" > "$mf"
+  for f in "$AGENTKIT_HOME"/agents/*.md; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .md)"
+    cpy render-agent "$f" "$AGENTKIT_HOME/codex/models.map" "$AGENTKIT_HOME/codex/karpathy-guidelines.md" "$CODEX_RENDER/$n.toml" || die "cannot render Codex agent $n"
+    dest="$TARGET/agents/$n.toml"
+    # A file we did not write (not in the manifest, different bytes) is never replaced without --force.
+    # Leave the agent out of the block too, so config.toml never points at a foreign file.
+    if { [ -e "$dest" ] || [ -L "$dest" ]; } && [ "$FORCE" != 1 ] && [ -z "$(awk -F"\t" -v k="agents/$n.toml" '$1 == k { print $2 }' "$mf")" ] \
+      && { [ -L "$dest" ] || [ "$(sha "$dest")" != "$(sha "$CODEX_RENDER/$n.toml")" ]; }; then
+      foreign="$foreign $n"; rm -f "$CODEX_RENDER/$n.toml"
+    else
+      cp "$f" "$ok/"
+    fi
+  done
+  if [ -n "$foreign" ]; then
+    warn "Codex agent(s)${foreign} not installed: $TARGET/agents/<name>.toml exists and is not managed by agentkit. Use --force to back it up and replace it."
+  fi
+  [ -n "$(ls "$ok")" ] || { CODEX_BLOCK=""; return 0; }
+  cpy render-block "$ok" "$TARGET/agents" "$CODEX_BLOCK" || die "cannot render the Codex config block"
+  msg="$(cpy config-put "$TARGET/config.toml" "$CODEX_BLOCK" check 2>&1 > /dev/null)"; rc=$?
+  [ "$rc" = 0 ] && return 0
+  if [ "$rc" = 3 ]; then
+    conflict="${msg##*markers: }"
+    warn "config.toml already defines agent(s) outside the agentkit markers: $conflict. Those are skipped."
+    for n in $conflict; do rm -f "$CODEX_RENDER/$n.toml" "$ok/$n.md"; done
+    [ -n "$(ls "$ok")" ] || { CODEX_BLOCK=""; return 0; }
+    if cpy render-block "$ok" "$TARGET/agents" "$CODEX_BLOCK" 2> /dev/null; then return 0; fi
+  else
+    warn "cannot use $TARGET/config.toml: $msg"
+  fi
+  CODEX_BLOCK=""
+}
+
+step_codex_config() { # install | update
+  local cfg="$TARGET/config.toml" st
+  [ -n "$CODEX_BLOCK" ] || { ui_item skipped "config.toml: no agents registered"; ui_summary_add codex config.toml skipped; return; }
+  if [ "$1" = update ]; then cpy config-has "$cfg" 2> /dev/null || return 0; fi
+  st="$(cpy config-put "$cfg" "$CODEX_BLOCK" check)" || { warn "cannot edit $cfg"; return; }
+  if [ "$st" = unchanged ]; then ui_item unchanged "config.toml: block already up to date"; ui_summary_add codex config.toml unchanged; return; fi
+  if [ "$DRY" = 1 ]; then dry "config.toml: $st agentkit block in $cfg"; return; fi
+  if [ "$1" = install ]; then
+    ask "Register the agentkit agents in $cfg ($st)?" || {
+      ui_item skipped "config.toml: skipped"; ui_summary_add codex config.toml skipped
+      warn "the agent files in $TARGET/agents are not registered in config.toml; codex doctor will warn about them. Run 'agentkit install --target codex' again and accept, or 'agentkit uninstall --target codex'."
+      return
+    }
+  fi
+  backup "$cfg"
+  cpy config-put "$cfg" "$CODEX_BLOCK" write > /dev/null || { warn "cannot write $cfg"; return; }
+  ui_item installed "config.toml: $st block in $cfg"
+  ui_summary_add codex config.toml "$st"
 }
 
 # ---------------------------------------------------------------- dependencies
+# Where each host's gstack lives. Claude: the clone itself. Codex: setup writes
+# $CODEX_HOME/skills/gstack-* (never clone the full repo under CODEX_HOME/skills).
+gs_present() { # host -> prints a path and returns 0 when installed
+  local p
+  if [ "$1" = codex ]; then
+    p="$(ls -d "$CODEX_HOME"/skills/gstack-* 2> /dev/null | head -n 1)"
+    [ -n "$p" ] || return 1
+    echo "$CODEX_HOME/skills/gstack-*"
+  else
+    [ -e "$CLAUDE_HOME/skills/gstack" ] || return 1
+    echo "$CLAUDE_HOME/skills/gstack"
+  fi
+}
+
 step_gstack() {
-  local gs="$CLAUDE_HOME/skills/gstack" url=https://github.com/garrytan/gstack.git
-  skipped gstack && { say "gstack: skipped (--skip gstack)"; return; }
-  if [ -e "$gs" ]; then say "gstack: already installed ($gs)"; return; fi
-  local cmd="git clone --single-branch --depth 1 $url $gs && cd $gs && ./setup"
+  local url=https://github.com/garrytan/gstack.git t p gs="" need="" cmd cloning=0 h log rc
+  skipped gstack && { ui_item skipped "gstack: skipped (--skip gstack)"; ui_summary_add gstack - skipped; return; }
+  for t in $TARGETS; do
+    if p="$(gs_present "$t")"; then ui_item unchanged "gstack: already installed ($p)"
+    else need="$need $t"; fi
+  done
+  need="${need# }"
+  has_need() { case " $need " in *" $1 "*) return 0 ;; esac; return 1; }
+  if [ -z "$need" ]; then ui_summary_add gstack - "already installed"; return; fi
+  # Reuse an existing clone: the Claude one, else ~/gstack. Otherwise clone to the Claude
+  # location when claude is a target, else to ~/gstack.
+  if [ -f "$CLAUDE_HOME/skills/gstack/setup" ]; then gs="$CLAUDE_HOME/skills/gstack"
+  elif [ -f "$HOME/gstack/setup" ] && ! has_need claude; then gs="$HOME/gstack"
+  else
+    cloning=1
+    if has_target claude; then gs="$CLAUDE_HOME/skills/gstack"; else gs="$HOME/gstack"; fi
+  fi
+  cmd=""
+  [ "$cloning" = 1 ] && cmd="git clone --single-branch --depth 1 $url $gs && "
+  cmd="${cmd}cd $gs"
+  for h in $need; do cmd="$cmd && ./setup --host $h"; done
   if [ "$DRY" = 1 ]; then dry "gstack: $cmd"; return; fi
-  ask "Install gstack (git clone, then its ./setup, needs git and bun)?" || { say "gstack: skipped. Manual: $cmd"; return; }
-  command -v git > /dev/null 2>&1 || { warn "gstack: git not found. Manual: $cmd"; return; }
+  if [ "$cloning" = 1 ]; then
+    ask "Install gstack (git clone into $gs, then its ./setup, needs git and bun)?" || { ui_item skipped "gstack: skipped. Manual: $cmd"; ui_summary_add gstack - skipped; return; }
+    command -v git > /dev/null 2>&1 || { warn "gstack: git not found. Manual: $cmd"; return; }
+  else
+    ask "Run gstack's ./setup for: $need (needs bun)?" || { ui_item skipped "gstack: skipped. Manual: $cmd"; ui_summary_add gstack - skipped; return; }
+  fi
   command -v bun > /dev/null 2>&1 || { warn "gstack: bun not found (https://bun.sh). Manual: $cmd"; return; }
-  mkdir -p "$(dirname "$gs")"
-  git clone --single-branch --depth 1 "$url" "$gs" || { warn "gstack: clone failed"; return; }
-  (cd "$gs" && ./setup) || warn "gstack: ./setup failed; run it by hand in $gs"
+  if [ "$cloning" = 1 ]; then
+    mkdir -p "$(dirname "$gs")"
+    # shellcheck disable=SC2046
+    git clone $(ui_git_progress_flag) --single-branch --depth 1 "$url" "$gs" || { warn "gstack: clone failed"; return; }
+  fi
+  for h in $need; do
+    set_target "$h"
+    [ "$h" = codex ] && say "  note: gstack on Codex is experimental; its safety skills (careful, guard, freeze) are advisory there."
+    mkdir -p "$STATE/logs" || { warn "cannot create $STATE/logs"; continue; }
+    log="$STATE/logs/gstack-setup-$TS.log"
+    ui_spin "gstack setup (--host $h)" "$log" bash -c 'cd "$1" && exec ./setup --host "$2"' _ "$gs" "$h"; rc=$?
+    arm_traps
+    if [ "$rc" = 0 ]; then
+      ui_item installed "gstack: set up for $h (log: $log)"; ui_summary_add "$h" gstack installed
+    else
+      warn "gstack: ./setup --host $h failed; run it by hand in $gs (log: $log)"; ui_summary_add "$h" gstack failed
+    fi
+  done
 }
 
 step_karpathy() {
   local m="https://github.com/forrestchang/andrej-karpathy-skills.git" p="andrej-karpathy-skills@karpathy-skills"
-  skipped karpathy && { say "karpathy: skipped (--skip karpathy)"; return; }
+  skipped karpathy && { ui_item skipped "karpathy: skipped (--skip karpathy)"; ui_summary_add claude karpathy skipped; return; }
   if ! command -v claude > /dev/null 2>&1; then
     say "karpathy: claude CLI not found. Run later:"
     say "  claude plugin marketplace add $m && claude plugin install $p"
     return
   fi
-  if claude plugin list 2> /dev/null | grep -q 'andrej-karpathy-skills'; then say "karpathy: plugin already installed"; return; fi
+  if claude plugin list 2> /dev/null | grep -q 'andrej-karpathy-skills'; then ui_item unchanged "karpathy: plugin already installed"; ui_summary_add claude karpathy unchanged; return; fi
   if [ "$DRY" = 1 ]; then dry "karpathy: claude plugin marketplace add $m; claude plugin install $p"; return; fi
-  ask "Install the karpathy-guidelines plugin with the claude CLI?" || { say "karpathy: skipped. Manual: claude plugin marketplace add $m && claude plugin install $p"; return; }
+  ask "Install the karpathy-guidelines plugin with the claude CLI?" || { ui_item skipped "karpathy: skipped. Manual: claude plugin marketplace add $m && claude plugin install $p"; ui_summary_add claude karpathy skipped; return; }
   claude plugin marketplace add "$m" || warn "karpathy: marketplace add failed (maybe already added)"
   claude plugin install "$p" || warn "karpathy: install failed; run it by hand"
+  ui_summary_add claude karpathy installed
 }
 
 # ---------------------------------------------------------------- commands
+STEP_I=0 STEP_N=0
+next_step() { STEP_I=$((STEP_I + 1)); ui_step "$STEP_I" "$STEP_N" "$1"; }
+has_target() { case " $TARGETS " in *" $1 "*) return 0 ;; esac; return 1; }
+
+count_steps() { # install steps for TARGETS
+  local n=0
+  if has_target claude; then
+    n=$((n + 1))
+    skipped claude-md || n=$((n + 1))
+    skipped hooks || n=$((n + 1))
+  fi
+  if has_target codex; then
+    n=$((n + 2))
+    skipped claude-md || n=$((n + 1))
+  fi
+  skipped gstack || n=$((n + 1))
+  if has_target claude && ! skipped karpathy; then n=$((n + 1)); fi
+  echo "$n"
+}
+
 cmd_install() {
-  parse_args "$@"; need_python; resolve_target
+  parse_args "$@"; ui_init
+  export REQ_WANT="${TARGET_OPT:-auto}"
+  ui_logo agentkit "$(version)"
+  if [ "${AGENTKIT_REQS_OK:-}" = 1 ]; then req_scan; else check_requirements install || die "requirements are not met"; fi
+  resolve_target; select_targets install
   [ -d "$AGENTKIT_HOME/agents" ] || die "agentkit files not found in $AGENTKIT_HOME"
-  say "agentkit $(version): installing into $TARGET"
   [ "$DRY" = 1 ] && say "(dry run: nothing is written)"
-  MODE=install
-  if [ "$DRY" != 1 ]; then mkdir -p "$TARGET/agents" "$STATE" || die "cannot create $TARGET"; fi
-  apply_all
-  write_manifest
-  summary
-  step_claude_md install
-  step_hooks
+  MODE=install; STEP_N="$(count_steps)"
+  for CUR in $TARGETS; do
+    set_target "$CUR"; reset_counts
+    say ""
+    say "agentkit $(version): installing into $TARGET"
+    if [ "$CUR" = claude ]; then
+      next_step "Claude: agents and skills"
+      if [ "$DRY" != 1 ]; then mkdir -p "$TARGET/agents" "$STATE" || die "cannot create $TARGET"; fi
+      apply_all; write_manifest; summary
+      skipped claude-md || next_step "Claude: CLAUDE.md"
+      step_claude_md install
+      skipped hooks || next_step "Claude: SubagentStop hook"
+      step_hooks
+    else
+      next_step "Codex: agents and skills"
+      if [ "$DRY" != 1 ]; then mkdir -p "$TARGET/agents" "$STATE" || die "cannot create $TARGET"; fi
+      codex_prepare
+      apply_all; write_manifest; summary
+      next_step "Codex: config.toml"
+      step_codex_config install
+      skipped claude-md || next_step "Codex: AGENTS.md"
+      step_claude_md install
+    fi
+  done
+  say ""
+  skipped gstack || next_step "gstack"
   step_gstack
-  step_karpathy
+  if has_target claude; then
+    skipped karpathy || next_step "karpathy-guidelines plugin"
+    step_karpathy
+  fi
+  ui_summary_print
   say ""
   say "Done. Run 'agentkit doctor' to check the setup."
 }
@@ -600,10 +871,14 @@ git_pull() {
 }
 
 cmd_update() {
-  parse_args "$@"; need_python; resolve_target
-  local before after
+  parse_args "$@"; ui_init; need_python; resolve_target; select_targets update
+  local before after tot_kept=0
+  for CUR in $TARGETS; do
+    set_target "$CUR"
+    [ -f "$MANIFEST" ] || die "agentkit is not installed in $TARGET (run: agentkit install)"
+  done
+  set_target "${TARGETS%% *}"
   UPDATE_STATUS="$STATE/update-status"
-  [ -f "$MANIFEST" ] || die "agentkit is not installed in $TARGET (run: agentkit install)"
   say "agentkit update ($(date '+%Y-%m-%d %H:%M:%S'))"
   if [ "$DRY" = 1 ]; then
     dry "git -C $AGENTKIT_HOME pull --ff-only"
@@ -619,13 +894,19 @@ cmd_update() {
     say "agentkit $(version) ($before -> $after)"
   fi
   MODE=update
-  apply_all
-  write_manifest
-  summary
-  step_claude_md update
-  refresh_hooks
-  if [ "$QUIET" = 1 ] && [ "$DRY" != 1 ] && [ "$N_KEPT" -gt 0 ]; then
-    echo "agentkit: update left $N_KEPT *.agentkit-new file(s) next to files you edited; run 'agentkit update' to list them" > "$UPDATE_STATUS"
+  for CUR in $TARGETS; do
+    set_target "$CUR"; reset_counts
+    say ""
+    say "$CUR: $TARGET"
+    if [ "$CUR" = codex ]; then codex_prepare; fi
+    apply_all; write_manifest; summary
+    step_claude_md update
+    if [ "$CUR" = codex ]; then step_codex_config update; else refresh_hooks; fi
+    tot_kept=$((tot_kept + N_KEPT))
+  done
+  ui_summary_print
+  if [ "$QUIET" = 1 ] && [ "$DRY" != 1 ] && [ "$tot_kept" -gt 0 ]; then
+    echo "agentkit: update left $tot_kept *.agentkit-new file(s) next to files you edited; run 'agentkit update' to list them" > "$UPDATE_STATUS"
   fi
   return 0
 }
@@ -643,7 +924,7 @@ refresh_hooks() {
     [ "$st" = unchanged ] && continue
     if [ "$DRY" = 1 ]; then dry "settings.json: refresh $src"; continue; fi
     backup "$SETTINGS"
-    if py hook-add "$SETTINGS" "$ev" "$src" "$cmd" "$t" write refresh > /dev/null; then say "settings.json: refreshed $src"; fi
+    if py hook-add "$SETTINGS" "$ev" "$src" "$cmd" "$t" write refresh > /dev/null; then ui_item installed "settings.json: refreshed $src"; fi
   done
 }
 
@@ -658,7 +939,7 @@ update_failed() {
 cmd_auto_update() {
   local sub="${1:-status}"
   [ $# -gt 0 ] && shift
-  parse_args "$@"; need_python; resolve_target
+  parse_args "$@"; ui_init; need_python; claude_only auto-update; resolve_target
   local cmd="$AGENTKIT_HOME/hooks/update-check.sh"
   case "$sub" in
     on)
@@ -671,16 +952,12 @@ cmd_auto_update() {
   esac
 }
 
-cmd_uninstall() {
-  parse_args "$@"; need_python; resolve_target
-  local rel mh dest d sk link real_home default_home
-  [ -f "$MANIFEST" ] || [ -d "$STATE" ] || die "agentkit is not installed in $TARGET"
+# Remove one target's files (manifest) and, for codex, its config.toml and AGENTS.md blocks.
+uninstall_one() {
+  local rel mh dest d sk st removed=0 kept="" skills=""
   say "Uninstalling agentkit from $TARGET"
-  [ "$DRY" = 1 ] && say "(dry run: nothing is removed)"
-  if [ "$DRY" != 1 ]; then ask "Remove agentkit files, hooks and the CLAUDE.md block?" || die "aborted"; fi
   MF_OLD="$(mktmp)"
   [ -f "$MANIFEST" ] && py mf-read "$MANIFEST" > "$MF_OLD"
-  local removed=0 kept="" skills=""
   while IFS="$(printf '\t')" read -r rel mh; do
     [ -n "$rel" ] || continue
     dest="$TARGET/$rel"
@@ -699,18 +976,34 @@ cmd_uninstall() {
       find "$TARGET/skills/$d" -depth -type d -empty -delete
     fi
   done
-  say "Removed $removed file(s)."
+  ui_item installed "Removed $removed file(s)."
+  ui_summary_add "$CUR" files "$removed removed"
   if [ -n "$kept" ]; then
     say "Kept because you edited them (delete by hand if you want):"
     for rel in $kept; do say "  $TARGET/$rel"; done
   fi
-  hook_remove agentkit-
-  if [ -f "$CLAUDE_MD" ] && ! skipped claude-md; then
-    local st
-    st="$(py block-del "$CLAUDE_MD" check)" || st=none
+  if [ "$CUR" = codex ]; then
+    [ "$DRY" = 1 ] || rmdir "$TARGET/agents" "$TARGET/skills" 2> /dev/null
+    if [ -f "$TARGET/config.toml" ]; then
+      st="$(cpy config-del "$TARGET/config.toml" check)" || st=none
+      if [ "$st" != none ]; then
+        if [ "$DRY" = 1 ]; then dry "config.toml: remove agentkit block"; else
+          backup "$TARGET/config.toml"
+          cpy config-del "$TARGET/config.toml" write > /dev/null && {
+            [ -s "$TARGET/config.toml" ] || rm -f "$TARGET/config.toml"
+            ui_item installed "config.toml: removed agentkit block"
+          }
+        fi
+      fi
+    fi
+  else
+    hook_remove agentkit-
+  fi
+  if [ -f "$INSTR_MD" ] && ! skipped claude-md; then
+    st="$(py block-del "$INSTR_MD" check)" || st=none
     if [ "$st" != none ]; then
-      if [ "$DRY" = 1 ]; then dry "CLAUDE.md: remove agentkit block"; else
-        backup "$CLAUDE_MD"; py block-del "$CLAUDE_MD" write > /dev/null && say "CLAUDE.md: removed agentkit block"
+      if [ "$DRY" = 1 ]; then dry "$INSTR_LABEL: remove agentkit block"; else
+        backup "$INSTR_MD"; py block-del "$INSTR_MD" write > /dev/null && ui_item installed "$INSTR_LABEL: removed agentkit block"
       fi
     fi
   fi
@@ -719,9 +1012,24 @@ cmd_uninstall() {
     if [ "$PURGE" = 1 ]; then
       rm -rf "${STATE:?}"
     elif ! rmdir "$STATE" 2> /dev/null; then
-      say "Kept $STATE/backups (your backups). Delete it by hand, or use --purge."
+      say "Kept $STATE/backups (your backups; also gstack logs). Delete it by hand, or use --purge."
     fi
   fi
+}
+
+cmd_uninstall() {
+  parse_args "$@"; ui_init; need_python; resolve_target; select_targets uninstall
+  local link real_home default_home
+  for CUR in $TARGETS; do
+    set_target "$CUR"
+    [ -f "$MANIFEST" ] || [ -d "$STATE" ] || die "agentkit is not installed in $TARGET"
+  done
+  [ "$DRY" = 1 ] && say "(dry run: nothing is removed)"
+  if [ "$DRY" != 1 ]; then ask "Remove agentkit files, hooks and the instruction blocks (CLAUDE.md, AGENTS.md, config.toml) for: $TARGETS?" || die "aborted"; fi
+  for CUR in $TARGETS; do
+    set_target "$CUR"
+    uninstall_one
+  done
   if [ "$PURGE" = 1 ] && [ -n "$PROJECT" ]; then
     warn "--purge with --project removes only this project's state; the shared clone $AGENTKIT_HOME is kept (run a user-scope uninstall --purge)"
   elif [ "$PURGE" = 1 ]; then
@@ -738,62 +1046,70 @@ cmd_uninstall() {
       say "Kept $AGENTKIT_HOME (not the default ~/.agentkit git clone). Delete it by hand if you want."
     fi
   fi
+  ui_summary_print
   say ""
   say "Not removed: gstack and the karpathy plugin."
-  say "  gstack:   delete $CLAUDE_HOME/skills/gstack and the settings.json entries marked _gstack_source"
-  say "  karpathy: claude plugin uninstall andrej-karpathy-skills@karpathy-skills"
+  has_target claude && say "  gstack:   delete $CLAUDE_HOME/skills/gstack and the settings.json entries marked _gstack_source"
+  has_target codex && say "  gstack (codex): delete $CODEX_HOME/skills/gstack-* (and the clone in ~/gstack if you want)"
+  has_target claude && say "  karpathy: claude plugin uninstall andrej-karpathy-skills@karpathy-skills"
+  return 0
 }
 
 cmd_doctor() {
-  parse_args "$@"; resolve_target
-  local fails=0 f n st mh inst tab
+  parse_args "$@"; ui_init; resolve_target; select_targets doctor
+  export REQ_WANT="${TARGET_OPT:-auto}"
+  local fails=0 f n st mh inst tab t ext label
   tab="$(printf '\t')"
   ok() { printf '  ok    %s\n' "$*"; }
   bad() { printf '  FAIL  %s\n' "$*"; fails=$((fails + 1)); }
   note() { printf '  warn  %s\n' "$*"; }
-  echo "agentkit $(version) doctor (target: $TARGET)"
-  if command -v python3 > /dev/null 2>&1 && python3 -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
-    ok "python3 $(python3 -I -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
-  else bad "python3 >= 3.9 not found"; fi
-  if command -v git > /dev/null 2>&1; then ok "git"; else bad "git not found"; fi
-  if command -v claude > /dev/null 2>&1; then ok "claude CLI"; else note "claude CLI not found (needed for the karpathy plugin)"; fi
-  if command -v gh > /dev/null 2>&1; then ok "gh (optional)"; else note "gh not found (optional, used by 'agentkit feedback')"; fi
+  echo "agentkit $(version) doctor"
+  if ! check_requirements report; then
+    if [ "${REQ_S_python3:-missing}" != ok ]; then bad "python3 >= 3.9 not found"; else bad "requirements not met"; fi
+  fi
   case ":$PATH:" in *":$HOME/.local/bin:"*) ok "\$HOME/.local/bin is on PATH" ;; *) note "\$HOME/.local/bin is not on PATH" ;; esac
   if [ -f "$AGENTKIT_HOME/bin/agentkit" ]; then ok "AGENTKIT_HOME $AGENTKIT_HOME"; else bad "AGENTKIT_HOME not found: $AGENTKIT_HOME"; fi
   if [ -d "$AGENTKIT_HOME/.git" ]; then
     if [ -z "$(git -C "$AGENTKIT_HOME" status --porcelain 2> /dev/null)" ]; then ok "AGENTKIT_HOME is clean"; else note "AGENTKIT_HOME has local changes (update may fail)"; fi
   else note "AGENTKIT_HOME is not a git clone (update will not work)"; fi
-  if [ -f "$MANIFEST" ]; then
-    inst="$(py mf-version "$MANIFEST")"
-    if [ "$inst" = "$(version)" ]; then ok "installed version $inst"; else note "installed version $inst, repo version $(version) (run: agentkit update)"; fi
-    MF_OLD="$(mktmp)"; py mf-read "$MANIFEST" > "$MF_OLD"
-    for f in "$AGENTKIT_HOME"/agents/*.md; do
-      [ -f "$f" ] || continue
-      n="$(basename "$f")"
-      mh="$(awk -F"$tab" -v k="agents/$n" '$1 == k { print $2; exit }' "$MF_OLD")"
-      if [ ! -e "$TARGET/agents/$n" ]; then st=missing
-      elif [ -z "$mh" ]; then st="not managed by agentkit"
-      elif [ "$(sha "$TARGET/agents/$n")" = "$mh" ]; then st=ok
-      else st=modified; fi
-      case "$st" in ok) ok "agent ${n%.md}" ;; modified) note "agent ${n%.md}: modified (kept on update)" ;; missing) bad "agent ${n%.md}: missing" ;; *) note "agent ${n%.md}: $st" ;; esac
-    done
-    for f in "$AGENTKIT_HOME"/skills/*/; do
-      [ -f "$f/SKILL.md" ] || continue
-      n="$(basename "$f")"
-      if [ -f "$TARGET/skills/$n/SKILL.md" ]; then
-        if grep -q "^skills/$n/" "$MF_OLD"; then ok "skill $n"; else note "skill $n: not managed by agentkit"; fi
-      else note "skill $n: missing"; fi
-    done
-  else
-    bad "not installed in $TARGET (run: agentkit install)"
-  fi
-  if [ -d "$CLAUDE_HOME/skills/gstack" ]; then ok "gstack"; else note "gstack not installed"; fi
-  if command -v claude > /dev/null 2>&1; then
-    if claude plugin list 2> /dev/null | grep -q 'andrej-karpathy-skills'; then ok "karpathy plugin"; else note "karpathy plugin not installed"; fi
-  fi
-  if [ -f "$SETTINGS" ] && py hook-has "$SETTINGS" agentkit-agent-log 2> /dev/null; then ok "SubagentStop hook in settings.json"; else note "SubagentStop hook not in settings.json"; fi
-  if [ -f "$SETTINGS" ] && py hook-has "$SETTINGS" agentkit-auto-update 2> /dev/null; then ok "auto-update on"; else note "auto-update off (agentkit auto-update on)"; fi
-  if [ -f "$CLAUDE_MD" ] && py block-has "$CLAUDE_MD" 2> /dev/null; then ok "CLAUDE.md block"; else note "CLAUDE.md block not present"; fi
+  for t in $TARGETS; do
+    set_target "$t"
+    echo "target $t: $TARGET"
+    if [ -f "$MANIFEST" ]; then
+      inst="$(py mf-version "$MANIFEST")"
+      if [ "$inst" = "$(version)" ]; then ok "installed version $inst"; else note "installed version $inst, repo version $(version) (run: agentkit update)"; fi
+      MF_OLD="$(mktmp)"; py mf-read "$MANIFEST" > "$MF_OLD"
+      ext=md; [ "$t" = codex ] && ext=toml
+      for f in "$AGENTKIT_HOME"/agents/*.md; do
+        [ -f "$f" ] || continue
+        label="$(basename "$f" .md)"; n="$label.$ext"
+        mh="$(awk -F"$tab" -v k="agents/$n" '$1 == k { print $2; exit }' "$MF_OLD")"
+        if [ ! -e "$TARGET/agents/$n" ]; then st=missing
+        elif [ -z "$mh" ]; then st="not managed by agentkit"
+        elif [ "$(sha "$TARGET/agents/$n")" = "$mh" ]; then st=ok
+        else st=modified; fi
+        case "$st" in ok) ok "agent $label" ;; modified) note "agent $label: modified (kept on update)" ;; missing) bad "agent $label: missing" ;; *) note "agent $label: $st" ;; esac
+      done
+      for n in $(skill_names); do
+        if [ -f "$TARGET/skills/$n/SKILL.md" ]; then
+          if grep -q "^skills/$n/" "$MF_OLD"; then ok "skill $n"; else note "skill $n: not managed by agentkit"; fi
+        else note "skill $n: missing"; fi
+      done
+    else
+      bad "not installed in $TARGET (run: agentkit install)"
+    fi
+    if gs_present "$t" > /dev/null; then ok "gstack"; else note "gstack not installed"; fi
+    if [ "$t" = claude ]; then
+      if command -v claude > /dev/null 2>&1; then
+        if claude plugin list 2> /dev/null | grep -q 'andrej-karpathy-skills'; then ok "karpathy plugin"; else note "karpathy plugin not installed"; fi
+      fi
+      if [ -f "$SETTINGS" ] && py hook-has "$SETTINGS" agentkit-agent-log 2> /dev/null; then ok "SubagentStop hook in settings.json"; else note "SubagentStop hook not in settings.json"; fi
+      if [ -f "$SETTINGS" ] && py hook-has "$SETTINGS" agentkit-auto-update 2> /dev/null; then ok "auto-update on"; else note "auto-update off (agentkit auto-update on)"; fi
+    else
+      if cpy config-has "$TARGET/config.toml" 2> /dev/null; then ok "config.toml agents block"; else note "config.toml agents block not present"; fi
+    fi
+    if [ -f "$INSTR_MD" ] && py block-has "$INSTR_MD" 2> /dev/null; then ok "$INSTR_LABEL block"; else note "$INSTR_LABEL block not present"; fi
+  done
   if [ "$fails" -gt 0 ]; then echo "$fails required check(s) failed"; exit 1; fi
   echo "all required checks passed"
 }
@@ -801,7 +1117,7 @@ cmd_doctor() {
 cmd_log() { need_python; exec python3 -I "$AGENTKIT_HOME/hooks/agent-log.py" "$@"; }
 
 cmd_feedback() {
-  parse_args "$@"; need_python; resolve_target
+  parse_args "$@"; ui_init; need_python; claude_only feedback; resolve_target
   local f title keep
   f="$(mktmp)"
   python3 -I "$AGENTKIT_HOME/hooks/agent-log.py" export --out "$f" || die "log export failed"
@@ -836,17 +1152,20 @@ cmd_help() {
   cat <<'EOF'
 agentkit: shared Claude Code agents and skills
 
-  agentkit install [--project DIR] [--dry-run] [--yes] [--force] [--skip STEP]...
+  agentkit install [--target claude|codex|both] [--project DIR] [--dry-run] [--yes] [--force] [--skip STEP]...
         STEP is one of: gstack karpathy claude-md hooks skills
-  agentkit update [--project DIR] [--quiet] [--force] [--dry-run]
-  agentkit auto-update on|off|status
-  agentkit uninstall [--project DIR] [--purge] [--dry-run] [--yes]
-  agentkit doctor [--project DIR]
+        --target: install default is every CLI found (claude, codex). update, uninstall and
+        doctor default to every target that is installed. --project is claude only.
+        claude-md also covers the Codex AGENTS.md block.
+  agentkit update [--target T] [--project DIR] [--quiet] [--force] [--dry-run]
+  agentkit auto-update on|off|status       (claude only)
+  agentkit uninstall [--target T] [--project DIR] [--purge] [--dry-run] [--yes]
+  agentkit doctor [--target T] [--project DIR]
   agentkit log report|resolve|export|merge [args]
   agentkit feedback
   agentkit version | help
 
-Environment: AGENTKIT_HOME (default ~/.agentkit), AGENTKIT_REPO, CLAUDE_CONFIG_DIR
+Environment: AGENTKIT_HOME (default ~/.agentkit), AGENTKIT_REPO, CLAUDE_CONFIG_DIR, CODEX_HOME (default ~/.codex)
 EOF
 }
 
