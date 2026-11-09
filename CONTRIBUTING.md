@@ -15,6 +15,9 @@ Thank you for helping. This file explains how to change agentkit.
 | `hooks/hooks.json` | SubagentStop hook for plugin mode. |
 | `hooks/update-check.sh` | SessionStart hook for auto-update. |
 | `templates/CLAUDE.md.snippet` | The workflow block that install puts in CLAUDE.md. |
+| `templates/AGENTS.md.snippet` | The workflow block that install puts in `~/.codex/AGENTS.md`. |
+| `lib/` | Shell and Python helpers for the CLI: `requirements.sh`, `ui.sh`, `codex.py`. |
+| `codex/` | Codex files: `models.map` and `karpathy-guidelines.md`. |
 | `.claude-plugin/` | `plugin.json` and `marketplace.json` for plugin mode. |
 | `scripts/validate.sh` | Repo checks. |
 | `scripts/sync.sh` | Maintainer tool: copy agents from `~/.claude/agents` into `agents/`. |

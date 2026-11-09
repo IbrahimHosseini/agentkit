@@ -1,0 +1,5 @@
+# alias  codex-model  reasoning-effort
+# Maps the Claude `model:` value of an agent to a Codex model and effort.
+# A frontmatter `effort:` in the agent file overrides the effort here.
+opus gpt-6-luna high
+sonnet gpt-5.6-luna medium

@@ -13,5 +13,11 @@ The vendored files are not changed. To refresh them, copy the folder again from 
 
 | Component | Source | License | Used by |
 |---|---|---|---|
-| gstack (`browse`, `benchmark`, `careful`, `cso`, ...) | https://github.com/garrytan/gstack | MIT | frontend, seo, devops, database, security |
+| gstack (`browse`, `benchmark`, `careful`, `cso`, ...) | https://github.com/garrytan/gstack | MIT | frontend, seo, devops, database, security. On Codex, agentkit runs its `./setup --host codex` (experimental). Codex-only installs clone it to `~/gstack`. |
 | andrej-karpathy-skills (`karpathy-guidelines`) | https://github.com/forrestchang/andrej-karpathy-skills | see source | most agents |
+
+## Adapted (rewritten from upstream)
+
+| Path | Source | License |
+|---|---|---|
+| `codex/karpathy-guidelines.md` | Adapted from https://github.com/forrestchang/andrej-karpathy-skills (`karpathy-guidelines`). Close paraphrase, written for Codex. | See source. I could not read the upstream LICENSE file. |

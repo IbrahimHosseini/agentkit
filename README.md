@@ -5,17 +5,35 @@
 [![License: MIT](https://img.shields.io/github/license/IbrahimHosseini/agentkit)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-agentkit is a shared pack of Claude Code agents for a team. It has 16 agents, three skills, a CLAUDE.md workflow block and a hook that logs agent mistakes. One command installs it. One command updates it.
+agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 16 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes. One command installs it. One command updates it.
 
 The agents follow one workflow. A supervisor plans the work. You approve the plan. Workers do the parts. The supervisor reviews the result. The hook records when an agent breaks a rule, so the team can improve the agent files.
 
 ## Requirements
 
-- macOS or Linux
-- git
-- python3 3.9 or newer
-- Claude Code CLI (`claude`)
-- Optional: `gh` (used by `agentkit feedback`), `bun` (needed to install gstack)
+| Tool | Need | Used for |
+|---|---|---|
+| macOS or Linux | required | The platform. |
+| `git` | required | Clone and update. |
+| `python3` 3.9 or newer | required | JSON and TOML work. |
+| `claude` or `codex` | at least one is required | The agent CLI you install for. |
+| `gh` | optional | `agentkit feedback`. |
+| `bun` | optional | Install of gstack. |
+
+When a tool is missing, install does this:
+
+1. It prints a list of all tools. `✓` means found. `✗` means missing or too old.
+2. It suggests an install command for each missing tool.
+3. It asks `y/N` before it runs a command.
+
+Rules:
+
+- With `--yes`, install accepts commands from a package manager (for example `brew install git`).
+- With `--yes`, install never runs a remote script (`curl ... | bash`). You must answer the prompt yourself, in a terminal.
+- With no terminal and without `--yes`, nothing is installed. Install prints the commands.
+- With `--yes`, package-manager commands run. Remote scripts never run with `--yes`.
+- The check follows `--target`. With `--target claude`, it needs `claude`. `codex` is then optional. With `--target codex`, it needs `codex`. `claude` is then optional. With `--target both`, it needs both. Without `--target`, one of the two is enough.
+- With `--dry-run`, install only reports. It runs nothing.
 
 ## Install
 
@@ -24,6 +42,10 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 ```
 
 The script clones the repo to `~/.agentkit`. It links the CLI to `~/.local/bin/agentkit`. Then it runs `agentkit install`. Each change to your settings asks for a yes first.
+
+### What you see
+
+Install prints a logo, then numbered steps such as `[2/6]`, with a progress line for long work such as `git clone`. At the end it prints a summary table. When the output is not a terminal, or `NO_COLOR` is set, or you pass `--quiet`, the output is plain text. `--quiet` prints only errors.
 
 Pass flags after `bash -s --`:
 
@@ -35,10 +57,23 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 |---|---|
 | `--dry-run` | Show what would change. Write nothing. |
 | `--yes`, `-y` | Answer yes to every question. |
-| `--project DIR` | Install into `DIR/.claude` and `DIR/CLAUDE.md`, not into `~/.claude`. |
+| `--target claude\|codex\|both` | Choose the CLI to install for. See below. |
+| `--project DIR` | Install into `DIR/.claude` and `DIR/CLAUDE.md`, not into `~/.claude`. Claude only. |
 | `--skip STEP` | Skip a step. STEP is `gstack`, `karpathy`, `claude-md`, `hooks` or `skills`. Repeat the flag to skip more. |
 | `--force` | Replace files that already exist and that agentkit did not install. A backup is made first. |
-| `--quiet` | Print less. |
+| `--quiet` | Print only errors. Questions still show. |
+
+### Targets
+
+`--target` sets which CLI gets the install.
+
+- Without `--target`, `install` uses every CLI it finds: `claude`, `codex`, or both.
+- `update`, `uninstall` and `doctor` use every target that is already installed.
+- With `--target claude`, files go to `~/.claude` (or `CLAUDE_CONFIG_DIR`).
+- With `--target codex`, files go to `~/.codex` (or `CODEX_HOME`).
+- `--target both` does both.
+- `--project` works only for Claude. `--project` with `--target codex` or `both` is an error.
+- `auto-update` is for Claude only.
 
 ### What install changes
 
@@ -48,8 +83,13 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 | Skills `agent-report`, `security-audit`, `write-swift` | `~/.claude/skills/` | `skills` |
 | Workflow block between `<!-- agentkit:start -->` and `<!-- agentkit:end -->` | `~/.claude/CLAUDE.md` | `claude-md` |
 | SubagentStop hook (agent log) | `~/.claude/settings.json` | `hooks` |
-| gstack (git clone, then its `./setup`) | `~/.claude/skills/gstack` | `gstack` |
+| gstack (git clone, then its `./setup --host claude`) | `~/.claude/skills/gstack` | `gstack` |
 | karpathy-guidelines plugin | through `claude plugin install` | `karpathy` |
+| Codex agents (16 `.toml` files) | `~/.codex/agents/` | (always, target codex) |
+| `[agents.<name>]` blocks between `# agentkit:start` and `# agentkit:end` | `~/.codex/config.toml` | (always, target codex) |
+| Workflow block between `<!-- agentkit:start -->` and `<!-- agentkit:end -->` | `~/.codex/AGENTS.md` | `claude-md` |
+| Skills `agent-report`, `security-audit`, `write-swift` | `~/.codex/skills/` | `skills` |
+| gstack (`./setup --host codex`) | The setup writes `~/.codex/skills/gstack-*`. With a codex-only install, the clone is `~/gstack`. | `gstack` |
 
 Safety rules:
 
@@ -63,6 +103,39 @@ Safety rules:
 - agentkit keeps a manifest with file hashes in `~/.claude/agentkit/manifest.json`.
 
 Run `agentkit doctor` after the install.
+
+### Codex
+
+With target codex, agentkit converts each `agents/<name>.md` to a Codex custom agent.
+
+- It writes `~/.codex/agents/<name>.toml`.
+- It adds an `[agents.<name>]` block to `~/.codex/config.toml`. All blocks sit between `# agentkit:start` and `# agentkit:end`. The rest of the file stays as it is.
+- It maps the Claude `model:` to a Codex model and effort with `codex/models.map`:
+
+| Claude model | Codex model | Effort |
+|---|---|---|
+| `opus` | `gpt-6-luna` | `high` |
+| `sonnet` | `gpt-5.6-luna` | `medium` |
+
+- An `effort:` line in the agent file overrides the effort. To change a model, edit `codex/models.map`.
+- Sandbox rule: if `tools` has `Edit` or `Write`, the sandbox is `workspace-write`. If not, it is `read-only`. The `security` agent is always `read-only`.
+- Agents that list `karpathy-guidelines` get the text of `codex/karpathy-guidelines.md` at the end of their instructions. It is the Codex equivalent of the plugin.
+- The workflow block goes to `~/.codex/AGENTS.md`. It tells the main session to start workers as Codex subagents.
+- The three skills are copied to `~/.codex/skills`.
+- gstack uses `./setup --host codex`. This is experimental. Where the clone lives:
+  - If `~/.claude/skills/gstack` has a clone, agentkit reuses it.
+  - With target claude, the clone is `~/.claude/skills/gstack`. One install runs the setup for each host that needs it.
+  - With a codex-only install, agentkit reuses `~/gstack` if it has a clone. If not, it clones gstack to `~/gstack`.
+  - agentkit never clones gstack under `~/.codex/skills`. Doctor treats gstack as installed on Codex when `~/.codex/skills/gstack-*` exists.
+   The safety skills (`careful`, `guard`, `freeze`) are advice only on Codex.
+- If `~/.codex/agents/<name>.toml` exists and agentkit did not install it, agentkit skips it. It also leaves that agent out of `config.toml`. Use `--force` to replace it, after a backup.
+
+Limits on Codex:
+
+- There is no SubagentStop hook on Codex, so nothing is logged automatically. The `supervisor` agent file still tells the supervisor to run `agentkit log add` for each FIX. Codex may or may not follow this. Rules such as `scope` or `git-write` are never checked on Codex.
+- There is no auto-update hook.
+- The agent bodies still name Claude tool names, such as `Edit` and `Bash`.
+- `doctor`, `update` and `uninstall` cover both targets.
 
 ### Alternative: plugin install
 
@@ -234,7 +307,7 @@ agentkit log merge issue1.json --include-local
 agentkit doctor
 ```
 
-It checks python3, git, `claude`, `gh`, PATH, the clone, the installed version, each agent and skill, gstack, the karpathy plugin, both hooks and the CLAUDE.md block. `FAIL` lines make the exit code 1. `warn` lines are advice.
+It checks python3, git, `claude`, `codex`, `gh`, PATH, the clone, the installed version, each agent and skill, gstack (for each target), the karpathy plugin, both hooks and the CLAUDE.md block. For Codex it checks the agent files, the `config.toml` block and the AGENTS.md block. Use `--target` to check one target. `FAIL` lines make the exit code 1. `warn` lines are advice.
 
 ## Uninstall
 
@@ -246,7 +319,7 @@ agentkit uninstall --dry-run  # show only
 
 It removes only files that you did not edit. It keeps edited files and tells you. It removes only hook entries that agentkit marked. It keeps symlinks.
 
-Backups stay unless you use `--purge`. With `--purge`, agentkit removes the `~/.local/bin/agentkit` link only if it points into `AGENTKIT_HOME`. It removes `~/.agentkit` only if that is the default git clone. Any other `AGENTKIT_HOME` (for example a dev checkout) is kept. With `--project`, `--purge` removes only the project state. It does not remove gstack or the karpathy plugin. The command prints how to remove them.
+Backups stay unless you use `--purge`. With `--purge`, agentkit removes the `~/.local/bin/agentkit` link only if it points into `AGENTKIT_HOME`. It removes `~/.agentkit` only if that is the default git clone. Any other `AGENTKIT_HOME` (for example a dev checkout) is kept. With `--project`, `--purge` removes only the project state. It does not remove gstack or the karpathy plugin. The command prints how to remove them. For gstack it names `~/.claude/skills/gstack` and the `_gstack_source` entries in `settings.json` (Claude), and `~/.codex/skills/gstack-*` (Codex). The clone in `~/gstack` is yours to delete.
 
 ## Troubleshooting
 
@@ -254,17 +327,20 @@ Backups stay unless you use `--purge`. With `--purge`, agentkit removes the `~/.
 |---|---|
 | `agentkit: command not found` | Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile. Open a new shell. |
 | `only one agentkit marker found` | Someone deleted one marker line in CLAUDE.md. Fix the file by hand: keep both `<!-- agentkit:start -->` and `<!-- agentkit:end -->`, or delete both. |
-| `bun not found`, gstack skipped | Install bun from https://bun.sh. Then run the printed `git clone ... && ./setup` command, or run `agentkit install` again. |
+| `bun not found`, gstack skipped | Install bun from https://bun.sh. Then run the printed `git clone ... && cd ... && ./setup --host ...` command, or run `agentkit install` again. |
 | gstack skipped without a message | You answered no, or there was no terminal. Use `--yes` or run the printed command. |
 | An agent file shows `modified` in doctor | You edited it. That is fine. Update keeps your file and writes `.agentkit-new`. |
 | `skills/NAME exists and is not managed by agentkit` | A skill with that name exists. Use `--force` to replace it (with a backup), or keep yours. |
 | Duplicate hook runs | You used both install modes. Remove one: `agentkit uninstall`, or `/plugin uninstall agentkit@agentkit`. |
 | `settings.json` not changed, "invalid JSON?" | Fix the JSON in `settings.json`. Run `agentkit install` again. |
+| `Codex agent(s) ... not installed: ... exists and is not managed by agentkit` | A Codex agent file with that name exists. Use `--force` to replace it (with a backup), or keep yours. The agent is then not in `config.toml`. |
+| `--project` fails with `--target codex` | `--project` is for Claude only. Remove `--project`, or use `--target claude`. |
+| Install asks to install git, python3 or an agent CLI | A requirement is missing. Answer `y`, or install it yourself and run `agentkit install` again. A remote script is never run with `--yes`. |
 | Update fails: not a git clone | `~/.agentkit` must be a git clone. Run the curl installer again. |
 
 ## Dependencies and credits
 
-agentkit vendors two skills and installs two third-party components. See [THIRD_PARTY.md](THIRD_PARTY.md) for sources and licenses.
+agentkit vendors two skills and installs two third-party components. `codex/karpathy-guidelines.md` is adapted from the karpathy plugin. See [THIRD_PARTY.md](THIRD_PARTY.md) for sources and licenses.
 
 ## License
 
