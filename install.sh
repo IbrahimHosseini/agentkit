@@ -145,7 +145,7 @@ req_list() {
 # Sets REQ_KIND (pm | script | link), REQ_CMD, REQ_LINK for one tool.
 req_plan() {
   local t="$1" pkg
-  REQ_KIND=link; REQ_CMD=""
+  REQ_KIND='link'; REQ_CMD=""
   case "$t" in
     git) REQ_LINK="https://git-scm.com/downloads" ;;
     python3) REQ_LINK="https://www.python.org/downloads/" ;;

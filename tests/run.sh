@@ -1593,7 +1593,7 @@ t_codex_install() {
   assert_rc 0 "install --target codex"
   assert_nofile "$CLAUDE"
   assert_grep "$STUB_LOG" "codex --version"
-  local f n name map_model map_effort
+  local f n name
   # one TOML per agent, none extra
   n=0
   for f in "$AKH"/agents/*.md; do
@@ -1604,11 +1604,10 @@ t_codex_install() {
   done
   assert_eq "$(ls "$CODEX/agents" | wc -l | tr -d ' ')" "$n" "number of agent files"
   assert_nofile "$CODEX/agents/backend.md"
-  # models and sandbox come from codex/models.map and the tools
-  map_model="$(awk '$1 == "sonnet" { print $2 }' "$AKH/codex/models.map")"
-  map_effort="$(awk '$1 == "sonnet" { print $3 }' "$AKH/codex/models.map")"
-  assert_grep "$CODEX/agents/backend.toml" "model = \"$map_model\""
-  assert_grep "$CODEX/agents/backend.toml" "model_reasoning_effort = \"$map_effort\""
+  # Check both model aliases against the intended defaults, independently of the map.
+  assert_grep "$CODEX/agents/backend.toml" 'model = "gpt-6-luna"'
+  assert_grep "$CODEX/agents/backend.toml" 'model_reasoning_effort = "medium"'
+  assert_grep "$CODEX/agents/security.toml" 'model = "gpt-6.1-sol"'
   assert_grep "$CODEX/agents/backend.toml" 'sandbox_mode = "workspace-write"'
   assert_grep "$CODEX/agents/security.toml" 'sandbox_mode = "read-only"'
   assert_grep "$CODEX/agents/security.toml" 'model_reasoning_effort = "high"'
@@ -2153,8 +2152,12 @@ t_codex_rendered_agents_have_no_claude_paths() {
   done
   assert_eq "$bad" "" "rendered agents that still mention .claude/"
   # supervisor.md reads the agent definitions: it must point at the Codex ones.
+  # These assertions match literal tilde paths in the instructions, not expanded HOME paths.
+  # shellcheck disable=SC2088
   assert_grep "$AKH/agents/supervisor.md" "~/.claude/agents/*.md"
+  # shellcheck disable=SC2088
   assert_grep "$CODEX/agents/supervisor.toml" "~/.codex/agents/*.toml"
+  # shellcheck disable=SC2088
   assert_nogrep "$CODEX/agents/supervisor.toml" "~/.claude"
 }
 

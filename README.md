@@ -114,8 +114,8 @@ With target codex, agentkit converts each `agents/<name>.md` to a Codex custom a
 
 | Claude model | Codex model | Effort |
 |---|---|---|
-| `opus` | `gpt-6-luna` | `high` |
-| `sonnet` | `gpt-5.6-luna` | `medium` |
+| `opus` | `gpt-6.1-sol` | `high` |
+| `sonnet` | `gpt-6-luna` | `medium` |
 
 - An `effort:` line in the agent file overrides the effort. To change a model, edit `codex/models.map`.
 - Sandbox rule: if `tools` has `Edit` or `Write`, the sandbox is `workspace-write`. If not, it is `read-only`. The `security` agent is always `read-only`.

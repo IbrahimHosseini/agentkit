@@ -1,4 +1,5 @@
 # agentkit requirements check. Self-contained: bash 3.2, no python, no other libs.
+# shellcheck shell=bash
 # Source this file, then run: check_requirements install|report
 #   Reads : REQ_WANT=auto|claude|codex|both (default auto: at least one of claude or codex),
 #           DRY=1 (report only, run nothing), YES=1 (accept package-manager installs,
@@ -122,7 +123,7 @@ req_list() {
 # Sets REQ_KIND (pm | script | link), REQ_CMD, REQ_LINK for one tool.
 req_plan() {
   local t="$1" pkg
-  REQ_KIND=link; REQ_CMD=""
+  REQ_KIND='link'; REQ_CMD=""
   case "$t" in
     git) REQ_LINK="https://git-scm.com/downloads" ;;
     python3) REQ_LINK="https://www.python.org/downloads/" ;;
