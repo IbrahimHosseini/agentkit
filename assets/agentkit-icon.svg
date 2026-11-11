@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">agentkit cat</title>
+  <desc id="desc">A cyan cat with pointed ears, round eyes, a dot nose, and a caret mouth, inspired by the agentkit terminal logo.</desc>
+  <style>
+    svg { --agentkit-cyan: #008b9c; }
+    .line { fill: none; stroke: var(--agentkit-cyan); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+    .dot { fill: var(--agentkit-cyan); }
+  </style>
+  <g class="line">
+    <!-- /\_/\ ears and the parentheses around the face. -->
+    <path d="M 29,46 33,23 50,37 H 78 L 95,23 99,46"/>
+    <path d="M 26,50 C 17,60 17,76 26,85 M 102,50 C 111,60 111,76 102,85"/>
+    <circle cx="46" cy="64" r="5"/>
+    <circle cx="82" cy="64" r="5"/>
+    <!-- > ^ < whiskers and mouth. -->
+    <path d="M 27,91 38,98 27,105 M 57,102 64,95 71,102 M 101,91 90,98 101,105"/>
+  </g>
+  <circle class="dot" cx="64" cy="72" r="3"/>
+</svg>

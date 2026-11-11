@@ -5,12 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-11
+
 ### Added
 
+- A local cat icon for the README, based on the terminal logo.
 - Linux dependency installation through `zypper` and `apk`, including the Alpine `github-cli` package name.
 - Isolated package-manager regression tests and container CI jobs for Fedora, Arch, openSUSE Tumbleweed, and Alpine. The pre-rewrite run at `bc897d1` passed all four containers and the existing Ubuntu/macOS jobs.
 - Platform status, Alpine bootstrap prerequisites, and Windows WSL2 setup and manual verification instructions. Actual WSL2 verification remains pending.
-- Native Windows launcher and PowerShell bootstrap for the shared Python lifecycle. Lifecycle and PowerShell bootstrap tests passed with Python 3.9 and 3.13 in the [12-job CI run at `c1ffb78`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42971871993).
+- Native Windows launcher and PowerShell bootstrap for the shared Python lifecycle. Lifecycle and PowerShell bootstrap tests passed with Python 3.9 and 3.13 in the [12-job CI run at `9cb96b4`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42972579681).
 - Offline lifecycle, path, managed-file, and bootstrap tests. CI includes Python 3.9 and 3.13 on Linux, macOS, and Windows.
 
 ### Changed
@@ -67,7 +70,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/IbrahimHosseini/agentkit/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/IbrahimHosseini/agentkit/releases/tag/v0.1.0

@@ -1,7 +1,7 @@
 {
   "name": "agentkit",
-  "version": "0.2.0",
-  "description": "A shareable pack of Claude Code agents, skills and an agent-log hook for a team.",
+  "version": "0.3.0",
+  "description": "A shared pack of agents and skills for Claude Code and Codex.",
   "author": {
     "name": "Ibrahim Hosseini"
   },

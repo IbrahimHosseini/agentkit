@@ -1,5 +1,7 @@
 # agentkit
 
+<img src="assets/agentkit-icon.svg" alt="agentkit cat" width="96" height="96">
+
 [![CI](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/IbrahimHosseini/agentkit)](https://github.com/IbrahimHosseini/agentkit/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/IbrahimHosseini/agentkit)](LICENSE)
@@ -48,15 +50,19 @@ The requirements check detects package managers, not distribution names.
 |---|---|---|
 | macOS | Homebrew, if present | Existing CI job. |
 | Debian / Ubuntu | `apt-get` | Existing Ubuntu CI job. |
-| Fedora | `dnf` | Fedora 43 container CI passed at `c1ffb78`. |
-| Arch Linux | `pacman` | Arch base container CI passed at `c1ffb78`. |
-| openSUSE | `zypper` | Tumbleweed container CI passed at `c1ffb78`. |
-| Alpine Linux | `apk` | Alpine 3.22 container CI passed at `c1ffb78`. See prerequisites below. |
-| Native Windows | Manual prerequisite installation | Python 3.9/3.13 lifecycle and PowerShell bootstrap tests passed at `c1ffb78`. |
+| Fedora | `dnf` | Fedora 43 container CI passed at `9cb96b4`. |
+| Arch Linux | `pacman` | Arch base container CI passed at `9cb96b4`. |
+| openSUSE | `zypper` | Tumbleweed container CI passed at `9cb96b4`. |
+| Alpine Linux | `apk` | Alpine 3.22 container CI passed at `9cb96b4`. See prerequisites below. |
+| Native Windows | Manual prerequisite installation | Python 3.9/3.13 lifecycle and PowerShell bootstrap tests passed at `9cb96b4`. |
 | Windows with WSL2 | The Linux distribution's manager | Manual verification required. |
 | Other Linux distributions | Manual prerequisite installation | No distribution-specific CI. |
 
-The [shared-core CI run at `c1ffb78`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42971871993) passed all 12 jobs. It covered the existing Ubuntu and macOS shell checks, Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers, and Python 3.9 and 3.13 on Linux, macOS, and native Windows. Each Windows Python suite reported 48 tests: 38 passed and ten skipped for platform or privilege limits. Each Windows PowerShell suite reported 12 passed, zero failed, and 12 total. Tests use fake target CLIs and local Git repositories. They do not verify real Claude Code, Codex, Bun, or gstack execution. WSL2 has not been tested on a Windows machine.
+The [shared-core CI run at `9cb96b4`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42972579681) passed all 12 jobs. It covered the existing Ubuntu and macOS shell checks, Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers, and Python 3.9 and 3.13 on Linux, macOS, and native Windows.
+
+Each Windows Python suite reported 48 tests: 38 passed and ten skipped for platform or privilege limits. Each Windows PowerShell suite reported 12 passed, zero failed, and 12 total.
+
+Tests use fake target CLIs and local Git repositories. They do not verify real Claude Code, Codex, Bun, or gstack execution. WSL2 has not been tested on a Windows machine.
 
 On Linux, if no supported package manager is found, install Bash, `curl`, `git`, Python 3.9 or newer, and your target CLI yourself. Then use the same Bash installer below. A missing optional tool does not prevent the core install. Non-root dependency installation requires `sudo`; on systems without it, install prerequisites as root first.
 
@@ -84,19 +90,21 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 
 ### Native Windows
 
-Native Windows support passed CI on this branch. Use a checkout that contains `install.ps1`, `bin/agentkit.cmd`, and `lib/agentkit.py`. The `main` bootstrap command does not install these unmerged changes.
+Native Windows support is merged into `main`. Clone the repository, then run its PowerShell bootstrap.
 
 Install Python 3.9 or newer, Git for Windows, and the native `claude` or `codex` CLI first. Add these tools to PATH and open a new terminal. The bootstrap prints guidance for missing prerequisites. It does not install them.
 
-From that checkout, run in PowerShell:
+Run in PowerShell:
 
 ```powershell
+git clone https://github.com/IbrahimHosseini/agentkit.git
+Set-Location agentkit
 $env:AGENTKIT_HOME = (Get-Location).Path
 & .\install.ps1 --target codex
 & "$env:USERPROFILE\.local\bin\agentkit.cmd" doctor --target codex
 ```
 
-Use `--target claude` or `--target both` when needed. Use `--dry-run` to inspect changes, or `--yes` to accept prompts. The script uses the checkout named by `AGENTKIT_HOME`. Without that variable, it uses `%USERPROFILE%\.agentkit` and clones there if the directory does not exist. A custom checkout is useful while native changes are unmerged.
+Use `--target claude` or `--target both` when needed. Use `--dry-run` to inspect changes, or `--yes` to accept prompts. The script uses the checkout named by `AGENTKIT_HOME`. Without that variable, it uses `%USERPROFILE%\.agentkit` and clones there if the directory does not exist. Use `AGENTKIT_HOME` when you want to install from a specific checkout.
 
 The bootstrap writes an ordinary launcher to `%USERPROFILE%\.local\bin\agentkit.cmd`. It backs up an existing launcher before replacement. It does not need administrator access, WSL, Bash, or permission to create symlinks. It does not change PATH, the registry, or execution policy. Add the launcher directory to your user PATH yourself if you want to type `agentkit`. If local policy blocks PowerShell scripts, use your organization's approved process. The core can also run directly:
 
@@ -410,6 +418,18 @@ agentkit uninstall --dry-run  # show only
 It removes only files that you did not edit. It keeps edited files and tells you. It removes only hook entries that agentkit marked. It keeps symlinks.
 
 Backups and the CLI launcher stay unless you use `--purge`. With `--purge`, agentkit removes the POSIX `~/.local/bin/agentkit` link only if it points into `AGENTKIT_HOME`. On native Windows, purging the default clone removes `%USERPROFILE%\.local\bin\agentkit.cmd` only when its bytes exactly match the generated launcher for that clone. Edited or foreign launchers stay unchanged. Launchers under linked directories also stay unchanged. The clone is removed only when `AGENTKIT_HOME` is the default user-home `.agentkit` Git clone. Any other `AGENTKIT_HOME` (for example a dev checkout) is kept. With `--project`, `--purge` removes only the project state. It does not remove gstack or the karpathy plugin. The command prints how to remove them. For gstack it names `~/.claude/skills/gstack` and the `_gstack_source` entries in `settings.json` (Claude), and `~/.codex/skills/gstack-*` (Codex). The clone in `~/gstack` is yours to delete.
+
+## Development checks
+
+From the repository root, run these checks on macOS or Linux:
+
+```bash
+bash scripts/validate.sh
+bash tests/run.sh
+python3 -I -m unittest discover -s tests -p "test_*.py"
+```
+
+The tests use temporary homes and fake target CLIs. They do not need a package install. See [CONTRIBUTING.md](CONTRIBUTING.md#native-windows-checks) for native Windows checks.
 
 ## Troubleshooting
 

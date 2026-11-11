@@ -72,14 +72,18 @@ Rules:
 ## Check before you open a PR
 
 ```bash
-scripts/validate.sh
+bash scripts/validate.sh
 bash tests/run.sh
 python3 -I -m unittest discover -s tests -p "test_*.py"
 ```
 
 `validate.sh` checks agent and skill frontmatter, personal paths, shared Python syntax, the hook unit tests, JSON files, matching versions, shell syntax, and shellcheck (with `--severity=warning`) when installed. CI keeps the Ubuntu and macOS shell checks. It also runs shell and Python tests in Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers. The [pre-rewrite Linux run at `bc897d1`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42948209369) passed all six environments. Each container reported 81 passed, zero failed, and one known-bug XFAIL.
 
-The [shared-core CI run at `c1ffb78`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42971871993) passed all 12 jobs. It covered the existing Ubuntu and macOS shell checks, Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers, and Python 3.9 and 3.13 on Linux, macOS, and native Windows. Each Windows Python suite reported 48 tests: 38 passed and ten skipped for platform or privilege limits. Each Windows PowerShell suite reported 12 passed, zero failed, and 12 total. Windows runs the native `.cmd` launcher and PowerShell bootstrap tests without Git Bash. Tests use temporary homes, fake target CLIs, and local Git upstreams. They do not verify real Claude Code, Codex, Bun, or gstack execution.
+The [shared-core CI run at `9cb96b4`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42972579681) passed all 12 jobs. It covered the existing Ubuntu and macOS shell checks, Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers, and Python 3.9 and 3.13 on Linux, macOS, and native Windows.
+
+Each Windows Python suite reported 48 tests: 38 passed and ten skipped for platform or privilege limits. Each Windows PowerShell suite reported 12 passed, zero failed, and 12 total.
+
+Windows runs the native `.cmd` launcher and PowerShell bootstrap tests without Git Bash. Tests use temporary homes, fake target CLIs, and local Git upstreams. They do not verify real Claude Code, Codex, Bun, or gstack execution.
 
 You can run the hook tests alone:
 
@@ -87,10 +91,16 @@ You can run the hook tests alone:
 python3 -I hooks/test_agent_log.py
 ```
 
-Test the CLI in a temporary home. Never test against your real `~/.claude`:
+Test the CLI in temporary target homes. Never test against your real `~/.claude` or `~/.codex`:
 
 ```bash
-HOME="$(mktemp -d)" bin/agentkit install --dry-run
+(
+  agentkit_scratch=$(mktemp -d)
+  export HOME="$agentkit_scratch"
+  export CODEX_HOME="$agentkit_scratch/.codex"
+  export CLAUDE_CONFIG_DIR="$agentkit_scratch/.claude"
+  bin/agentkit install --dry-run
+)
 ```
 
 ### Native Windows checks
@@ -155,10 +165,16 @@ The maintainer's own `~/.claude/agents/supervisor.md` has a different agent-log 
 
 ## Release
 
-1. Change `VERSION`.
-2. Change `version` in `.claude-plugin/plugin.json` to the same value.
-3. Add an entry to `CHANGELOG.md` (Keep a Changelog format).
-4. Run `scripts/validate.sh`.
+1. Create a release branch. Change `VERSION`.
+2. Set `version` in `.claude-plugin/plugin.json` to the same value. The marketplace has no version field.
+3. Move the `Unreleased` entries into a dated version section in `CHANGELOG.md`. Keep the empty `Unreleased` heading.
+4. Update the changelog comparison links. Update the docs for the release.
+5. Run all checks above. Open a version PR with the results.
+6. Wait for CI and review. The user merges the version PR. Do not merge it automatically.
+7. After the merge, check the merged commit on `main`. Confirm its version and CI results.
+8. Create the version tag, such as `v0.3.0`, on that merged commit. Publish the GitHub release from that tag.
+
+Do not tag or publish before the user merges the version PR. A prepared changelog section does not mean the release is published.
 
 ## Pull requests
 
