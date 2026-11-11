@@ -3,9 +3,9 @@
 [![CI](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/IbrahimHosseini/agentkit)](https://github.com/IbrahimHosseini/agentkit/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/IbrahimHosseini/agentkit)](LICENSE)
-![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 
-agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 16 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes. One command installs it. One command updates it.
+agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 16 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes on POSIX systems. One command installs it. One command updates it.
 
 The agents follow one workflow. A supervisor plans the work. You approve the plan. Workers do the parts. The supervisor reviews the result. The hook records when an agent breaks a rule, so the team can improve the agent files.
 
@@ -13,20 +13,23 @@ The agents follow one workflow. A supervisor plans the work. You approve the pla
 
 | Tool | Need | Used for |
 |---|---|---|
-| macOS or Linux (including WSL2) | required | The platform. See the status below. |
-| Bash 3.2 or newer | required | The installer and CLI. |
-| `curl` | required for the bootstrap command | Download the installer. |
+| macOS, Linux, or native Windows | required | The platform. WSL2 is a separate Linux environment. |
+| Bash 3.2 or newer | POSIX only | The shell installer and optional POSIX integrations. |
+| PowerShell | native Windows bootstrap | Run `install.ps1`. Windows CI uses PowerShell 7. |
+| `curl` | POSIX bootstrap command only | Download the shell installer. |
 | `git` | required | Clone and update. |
-| `python3` 3.9 or newer | required | JSON and TOML work. |
+| Python 3.9 or newer | required | The shared CLI. On POSIX, the command is `python3`. On Windows, the launcher checks `python`, `python3`, then `py -3`. |
 | `claude` or `codex` | at least one is required | The agent CLI you install for. |
 | `gh` | optional | `agentkit feedback`. |
 | `bun` | optional | Install of gstack. |
 
-When a tool is missing, install does this:
+On macOS and Linux, when a tool is missing, install does this:
 
 1. It prints a list of all tools. `✓` means found. `✗` means missing or too old.
 2. It suggests an install command for each missing tool.
 3. It asks `y/N` before it runs a command.
+
+These dependency-install rules apply to macOS and Linux. Native Windows reports missing requirements and asks you to install them yourself. It does not run `winget`, a package manager, or a remote installer.
 
 Rules:
 
@@ -45,14 +48,15 @@ The requirements check detects package managers, not distribution names.
 |---|---|---|
 | macOS | Homebrew, if present | Existing CI job. |
 | Debian / Ubuntu | `apt-get` | Existing Ubuntu CI job. |
-| Fedora | `dnf` | Container CI configured for Fedora 43. |
-| Arch Linux | `pacman` | Container CI configured for Arch base. |
-| openSUSE | `zypper` | Container CI configured for Tumbleweed. |
-| Alpine Linux | `apk` | Container CI configured for Alpine 3.22. See prerequisites below. |
+| Fedora | `dnf` | Fedora 43 container CI passed at `bc897d1`. |
+| Arch Linux | `pacman` | Arch base container CI passed at `bc897d1`. |
+| openSUSE | `zypper` | Tumbleweed container CI passed at `bc897d1`. |
+| Alpine Linux | `apk` | Alpine 3.22 container CI passed at `bc897d1`. See prerequisites below. |
+| Native Windows | Manual prerequisite installation | Python 3.9/3.13 CI configured. Native verification is pending. |
 | Windows with WSL2 | The Linux distribution's manager | Manual verification required. |
 | Other Linux distributions | Manual prerequisite installation | No distribution-specific CI. |
 
-The four container jobs are configured in `.github/workflows/ci.yml`. They have not been run as part of this change. Package-manager regression tests use isolated stubs. These tests do not prove that a real package installation or a target CLI works on each distribution. WSL2 has not been tested on a Windows machine. Native Windows installation is outside the current scope.
+The [Linux distribution run at `bc897d1`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42948209369) passed on macOS, Ubuntu, Fedora, Arch, openSUSE, and Alpine. Each of the four container suites reported 81 passed, zero failed, and one known-bug XFAIL. This result predates the shared Python rewrite. The new workflow also tests the shared core on Linux, macOS, and Windows with Python 3.9 and 3.13. Results for that rewrite are pending. Tests use fake target CLIs and local Git repositories. They do not prove that real Claude Code, Codex, Bun, or gstack runs on each distribution. WSL2 has not been tested on a Windows machine.
 
 If no supported package manager is found, install Bash, `curl`, `git`, Python 3.9 or newer, and your target CLI yourself. Then use the same Bash installer below. A missing optional tool does not prevent the core install. Non-root dependency installation requires `sudo`; on systems without it, install prerequisites as root first.
 
@@ -77,6 +81,37 @@ Then install a compatible target CLI and run the Bash install command above. [Al
 ```bash
 curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/install.sh | bash -s -- --skip gstack --skip karpathy
 ```
+
+### Native Windows
+
+Native Windows support is under verification on this branch. Use a checkout that contains `install.ps1`, `bin/agentkit.cmd`, and `lib/agentkit.py`. The `main` bootstrap command does not install these unmerged changes.
+
+Install Python 3.9 or newer, Git for Windows, and the native `claude` or `codex` CLI first. Add these tools to PATH and open a new terminal. The bootstrap prints guidance for missing prerequisites. It does not install them.
+
+From that checkout, run in PowerShell:
+
+```powershell
+$env:AGENTKIT_HOME = (Get-Location).Path
+& .\install.ps1 --target codex
+& "$env:USERPROFILE\.local\bin\agentkit.cmd" doctor --target codex
+```
+
+Use `--target claude` or `--target both` when needed. Use `--dry-run` to inspect changes, or `--yes` to accept prompts. The script uses the checkout named by `AGENTKIT_HOME`. Without that variable, it uses `%USERPROFILE%\.agentkit` and clones there if the directory does not exist. A custom checkout is useful while native changes are unmerged.
+
+The bootstrap writes an ordinary launcher to `%USERPROFILE%\.local\bin\agentkit.cmd`. It backs up an existing launcher before replacement. It does not need administrator access, WSL, Bash, or permission to create symlinks. It does not change PATH, the registry, or execution policy. Add the launcher directory to your user PATH yourself if you want to type `agentkit`. If local policy blocks PowerShell scripts, use your organization's approved process. The core can also run directly:
+
+```powershell
+python -I .\lib\agentkit.py install --target codex
+python -I .\lib\agentkit.py doctor --target codex
+```
+
+Native Windows runs `install`, `update`, `doctor`, `uninstall`, `version`, and `help` through the same Python engine as macOS and Linux. Default target folders are `%USERPROFILE%\.claude` and `%USERPROFILE%\.codex`. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override them. Keep Windows and WSL configurations separate.
+
+The first native version does not install gstack, the Karpathy plugin, Bash hooks, or auto-update hooks. It prints this limit. `auto-update`, `log`, and `feedback` remain POSIX commands. Codex agents can still include the bundled Karpathy instruction text. A `.cmd` or `.bat` target command cannot use shell metacharacters in its executable path or arguments: `& | < > ^ % !`, carriage returns, or newlines. Use a native executable or a path without these characters.
+
+### Upgrade an existing installation
+
+Existing target manifests and backup folders keep the same layout. No manual configuration conversion is needed. After you update the agentkit checkout, run `agentkit update`. The shared engine reads the existing `agentkit/manifest.json`, keeps user-edited files, and writes a `.agentkit-new` file when an upstream change needs review. Files outside managed blocks stay in place. Keep your existing `CODEX_HOME` or `CLAUDE_CONFIG_DIR` overrides during the upgrade.
 
 ### Windows through WSL2
 
@@ -122,9 +157,11 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 - With `--target codex`, files go to `~/.codex` (or `CODEX_HOME`).
 - `--target both` does both.
 - `--project` works only for Claude. `--project` with `--target codex` or `both` is an error.
-- `auto-update` is for Claude only.
+- `auto-update` is for Claude on POSIX only.
 
 ### What install changes
+
+The hooks, gstack, and Karpathy plugin rows below apply to POSIX systems only. Native Windows installs the agents, bundled skills, workflow blocks, and Codex configuration.
 
 | Item | Where | Step name |
 |---|---|---|
@@ -263,6 +300,8 @@ If `git pull` fails (local commits or changes in `~/.agentkit`), fix the clone b
 
 ### Auto-update
 
+This section applies to Claude on macOS and Linux. Native Windows does not write or run this Bash hook.
+
 ```bash
 agentkit auto-update on
 agentkit auto-update off
@@ -274,6 +313,8 @@ agentkit auto-update status
 To change the interval, set `AGENTKIT_UPDATE_INTERVAL` (seconds).
 
 ## Agent log
+
+Automatic logging and the `agentkit log` and `feedback` commands in this section are POSIX features. Native Windows does not install the Bash integration.
 
 The SubagentStop hook runs `hooks/agent-log.py check` when a subagent ends. It reads the transcript of the subagent. It never blocks the agent. It writes findings to `~/.claude/agent-log/issues.jsonl`. Set `AGENT_LOG_DIR` to use another folder.
 
@@ -356,7 +397,7 @@ agentkit log merge issue1.json --include-local
 agentkit doctor
 ```
 
-It checks python3, git, `claude`, `codex`, `gh`, PATH, the clone, the installed version, each agent and skill, gstack (for each target), the karpathy plugin, both hooks and the CLAUDE.md block. For Codex it checks the agent files, the `config.toml` block and the AGENTS.md block. Use `--target` to check one target. `FAIL` lines make the exit code 1. `warn` lines are advice.
+It checks installed target manifests, agent files, skills, the target CLI, and workflow blocks. For Codex it also checks the managed `config.toml` block. POSIX requirements use the shell requirements checker. Native Windows does not require the skipped POSIX integrations. Use `--target` to check one target. `FAIL` lines make the exit code 1. `warn` lines are advice.
 
 ## Uninstall
 
@@ -368,7 +409,7 @@ agentkit uninstall --dry-run  # show only
 
 It removes only files that you did not edit. It keeps edited files and tells you. It removes only hook entries that agentkit marked. It keeps symlinks.
 
-Backups stay unless you use `--purge`. With `--purge`, agentkit removes the `~/.local/bin/agentkit` link only if it points into `AGENTKIT_HOME`. It removes `~/.agentkit` only if that is the default git clone. Any other `AGENTKIT_HOME` (for example a dev checkout) is kept. With `--project`, `--purge` removes only the project state. It does not remove gstack or the karpathy plugin. The command prints how to remove them. For gstack it names `~/.claude/skills/gstack` and the `_gstack_source` entries in `settings.json` (Claude), and `~/.codex/skills/gstack-*` (Codex). The clone in `~/gstack` is yours to delete.
+Backups and the CLI launcher stay unless you use `--purge`. With `--purge`, agentkit removes the POSIX `~/.local/bin/agentkit` link only if it points into `AGENTKIT_HOME`. On native Windows, purging the default clone removes `%USERPROFILE%\.local\bin\agentkit.cmd` only when its bytes exactly match the generated launcher for that clone. Edited or foreign launchers stay unchanged. Launchers under linked directories also stay unchanged. The clone is removed only when `AGENTKIT_HOME` is the default user-home `.agentkit` Git clone. Any other `AGENTKIT_HOME` (for example a dev checkout) is kept. With `--project`, `--purge` removes only the project state. It does not remove gstack or the karpathy plugin. The command prints how to remove them. For gstack it names `~/.claude/skills/gstack` and the `_gstack_source` entries in `settings.json` (Claude), and `~/.codex/skills/gstack-*` (Codex). The clone in `~/gstack` is yours to delete.
 
 ## Troubleshooting
 

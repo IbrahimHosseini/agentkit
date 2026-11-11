@@ -8,7 +8,11 @@ Thank you for helping. This file explains how to change agentkit.
 |---|---|
 | `agents/*.md` | One file for each agent. |
 | `skills/<name>/` | Skills. Each has a `SKILL.md`. |
-| `bin/agentkit` | The CLI (bash 3.2 compatible, python3 stdlib for JSON). |
+| `bin/agentkit` | Bash 3.2 launcher for the shared Python CLI. |
+| `bin/agentkit.cmd` | Native Windows launcher. |
+| `install.ps1` | Native Windows PowerShell bootstrap. |
+| `lib/agentkit.py`, `lib/agentkit_core/` | Shared Python entry point and lifecycle engine. |
+| `lib/legacy-cli.sh` | POSIX ancillary commands and integration helpers. |
 | `install.sh` | Bootstrap script for the curl install. |
 | `hooks/agent-log.py` | The agent log: `check`, `add`, `report`, `resolve`, `export`, `merge`. |
 | `hooks/test_agent_log.py` | Unit tests for the hook. |
@@ -21,7 +25,7 @@ Thank you for helping. This file explains how to change agentkit.
 | `.claude-plugin/` | `plugin.json` and `marketplace.json` for plugin mode. |
 | `scripts/validate.sh` | Repo checks. |
 | `scripts/sync.sh` | Maintainer tool: copy agents from `~/.claude/agents` into `agents/`. |
-| `tests/` | Shell tests (`tests/run.sh`). |
+| `tests/` | Shell integration tests, Python stdlib tests, and native PowerShell bootstrap tests. |
 | `THIRD_PARTY.md` | Sources and licenses of third-party parts. |
 | `VERSION` | The version. |
 
@@ -70,9 +74,12 @@ Rules:
 ```bash
 scripts/validate.sh
 bash tests/run.sh
+python3 -I -m unittest discover -s tests -p "test_*.py"
 ```
 
-`validate.sh` checks agent and skill frontmatter, personal paths, Python compile, the hook unit tests, JSON files, that `plugin.json` version equals `VERSION`, `bash -n` on the scripts, and shellcheck (with `--severity=warning`) when it is installed. CI runs the same two commands on Ubuntu and macOS. The workflow also defines container jobs for Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22. These jobs install test prerequisites inside disposable containers. The container jobs have not been run as part of this change. They test agentkit with fake target CLIs, not real Claude Code, Codex, Bun, or gstack installations.
+`validate.sh` checks agent and skill frontmatter, personal paths, shared Python syntax, the hook unit tests, JSON files, matching versions, shell syntax, and shellcheck (with `--severity=warning`) when installed. CI keeps the Ubuntu and macOS shell checks. It also runs shell and Python tests in Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers. The [pre-rewrite Linux run at `bc897d1`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42948209369) passed all six environments. Each container reported 81 passed, zero failed, and one known-bug XFAIL.
+
+The shared-core matrix uses Python 3.9 and 3.13 on Linux, macOS, and Windows. Windows runs the native `.cmd` launcher and PowerShell bootstrap tests. No Git Bash is used for those native checks. Results for the shared-core rewrite are pending. Tests use temporary homes, fake target CLIs, and local Git upstreams. They do not verify real Claude Code, Codex, Bun, or gstack execution.
 
 You can run the hook tests alone:
 
@@ -85,6 +92,19 @@ Test the CLI in a temporary home. Never test against your real `~/.claude`:
 ```bash
 HOME="$(mktemp -d)" bin/agentkit install --dry-run
 ```
+
+### Native Windows checks
+
+From the checkout, run in PowerShell:
+
+```powershell
+python -I -m unittest discover -s tests -p "test_*.py"
+& .\tests\test_bootstrap.ps1
+```
+
+The PowerShell harness requires PowerShell 7, Python 3.9 or newer, and Git. It copies the current working tree into a temporary local upstream, sets temporary target homes, and runs the real bootstrap and `.cmd` launchers. It uses fake target CLIs. No account sign-in, live target configuration, or package install is required. The Python tests also run on POSIX; Windows-only checks are skipped there. A POSIX pass is not a native Windows pass.
+
+Keep changes compatible with Python 3.9. Use the shared core for lifecycle commands. Keep Bash-specific hooks and optional integrations behind the POSIX boundary. Use argument arrays for subprocesses. Do not weaken file ownership, symlink, reparse-point, manifest, or purge safeguards to make tests pass.
 
 ### Manual WSL2 verification
 

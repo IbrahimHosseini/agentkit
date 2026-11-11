@@ -29,7 +29,7 @@ class Fail(Exception):
 
 def rd(p):
     try:
-        with open(p, encoding='utf-8') as f:
+        with open(p, encoding='utf-8', newline='') as f:
             return f.read()
     except FileNotFoundError:
         return None
@@ -39,7 +39,7 @@ def wr(p, s):
     p = os.path.realpath(p)  # never replace a symlink, write through it
     os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = p + '.agentkit-tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
+    with open(tmp, 'w', encoding='utf-8', newline='') as f:
         f.write(s)
     if os.path.exists(p):
         os.chmod(tmp, os.stat(p).st_mode & 0o7777)
@@ -198,7 +198,20 @@ def conflicts(outside, names):
 
 def config_put(cfg, blockf, mode):
     block = need(blockf)
-    lines = (rd(cfg) or '').splitlines(keepends=True)
+    text = rd(cfg) or ''
+    try:
+        import tomllib
+    except ImportError:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('[') and not stripped.split('#', 1)[0].rstrip().endswith(']'):
+                raise Fail('invalid TOML header in config')
+    else:
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise Fail('invalid TOML config: ' + str(exc))
+    lines = text.splitlines(keepends=True)
     r = region([l.rstrip('\r\n') for l in lines])
     outside = lines if r is None else lines[:r[0]] + lines[r[1] + 1:]
     bad = conflicts(outside, set(block_names(block)))
