@@ -101,6 +101,8 @@ jobs:
               variants = {
                   'plain': call + 'exit /b %errorlevel%\n',
                   'one-line': call.rstrip('\n') + ' && exit /b 0 || exit /b 1\n',
+                  'leave-context': '(goto) 2>nul & ' + call,
+                  'leave-context-normalized': '(goto) 2>nul & ' + call.rstrip('\n') + ' && exit /b 0 || exit /b 1\n',
                   'zero-call': '(\n' + call + 'if errorlevel 1 exit /b 1\nif not errorlevel 0 exit /b 1\nexit /b 0\n)\n',
                   'rem-zero-call': '(\n' + call + 'rem cached termination\nif errorlevel 1 exit /b 1\nif not errorlevel 0 exit /b 1\nexit /b 0\n)\n',
                   'call-set': '(\n' + call + 'call set "AK_EXIT=%%errorlevel%%"\nsetlocal EnableDelayedExpansion\nexit /b !AK_EXIT!\n)\n',
