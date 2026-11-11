@@ -73,6 +73,15 @@ if python3 -I -m py_compile hooks/agent-log.py; then pass "py_compile hooks/agen
 find . -name __pycache__ -path './hooks/*' -prune -exec rm -rf {} + 2> /dev/null
 if python3 -I hooks/test_agent_log.py > /dev/null 2>&1; then pass "hooks/test_agent_log.py"; else fail "hooks/test_agent_log.py (run it by hand for details)"; fi
 
+# Compile the shared native core without creating bytecode in the checkout.
+if python3 -I - <<'PYCORE'
+import pathlib
+for path in sorted(pathlib.Path('lib').rglob('*.py')):
+    compile(path.read_bytes(), str(path), 'exec')
+print('ok:   shared Python core syntax')
+PYCORE
+then :; else fail "shared Python core syntax"; fi
+
 # Codex support: python helper, data files, and the requirements block embedded in install.sh.
 if PYTHONDONTWRITEBYTECODE=1 python3 -I -m py_compile lib/codex.py; then pass "py_compile lib/codex.py"; else fail "py_compile lib/codex.py"; fi
 find . -name __pycache__ -path './lib/*' -prune -exec rm -rf {} + 2> /dev/null
@@ -97,6 +106,7 @@ if [ "$v" = "$pv" ]; then pass "plugin.json version $pv matches VERSION"; else f
 # Shell scripts.
 scripts="install.sh bin/agentkit lib/ui.sh lib/requirements.sh hooks/update-check.sh scripts/validate.sh scripts/sync.sh"
 [ -f tests/run.sh ] && scripts="$scripts tests/run.sh"
+[ -f lib/legacy-cli.sh ] && scripts="$scripts lib/legacy-cli.sh"
 for s in $scripts; do
   if bash -n "$s"; then pass "bash -n $s"; else fail "syntax error in $s"; fi
 done

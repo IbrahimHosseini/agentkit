@@ -1,3 +1,42 @@
+# Current work: native Windows and shared Python lifecycle
+
+Branch: `codex/windows-native`. Base commit: `bc897d1`. Linux support is merged into `main` at `c85abdc`. This branch includes that merge and the native Windows work. The native Windows work is not yet merged into `main`. This section describes current work. The original 0.2.0 handoff below is historical.
+
+## Scope and layout
+
+- `lib/agentkit.py` and `lib/agentkit_core/` implement shared `install`, `update`, `doctor`, `uninstall`, `version`, and `help` commands.
+- `bin/agentkit` is the POSIX launcher. `lib/legacy-cli.sh` provides POSIX ancillary commands and integration helpers.
+- `bin/agentkit.cmd` and `install.ps1` are native Windows entry points. They need Python 3.9 or newer and native Git. The target CLI must already be installed.
+- Native Windows skips gstack, the Karpathy plugin, Bash hooks, and auto-update. It does not require Bash, WSL, administrator rights, or symlink privileges.
+- Existing manifests, backup folders, target overrides, and marker-managed configuration retain their layout. Do not change the real user configuration for testing.
+
+## Current verification
+
+The [Linux CI run at `bc897d1`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42948209369) passed macOS, Ubuntu, Fedora, Arch, openSUSE, and Alpine before the shared-core rewrite. The four distro suites each reported 81 passed, zero failed, and one known-bug XFAIL. The container setup uses `tar --no-same-owner` so root does not restore checkout ownership into the scratch Git upstream.
+
+The [shared-core CI run at `c1ffb78`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42971871993) passed all 12 jobs. It covered the existing Ubuntu and macOS shell checks, Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers, and Python 3.9 and 3.13 on Linux, macOS, and native Windows. Each Windows Python suite reported 48 tests: 38 passed and ten skipped for platform or privilege limits. Each Windows PowerShell suite reported 12 passed, zero failed, and 12 total. The PowerShell cases include owned launcher self-purge, junction guards, preservation of foreign or edited launchers, and removal of read-only Git objects. Fake target CLIs and local Git upstreams verify agentkit behavior. They do not verify a real custom-agent session. WSL2 testing on Windows remains pending. PowerShell is not available on the local macOS host.
+
+## Current checks
+
+On POSIX:
+
+```bash
+bash scripts/validate.sh
+bash tests/run.sh
+python3 -I -m unittest discover -s tests -p "test_*.py"
+```
+
+On Windows, from PowerShell 7:
+
+```powershell
+python -I -m unittest discover -s tests -p "test_*.py"
+& .\tests\test_bootstrap.ps1
+```
+
+Use the [native Windows instructions](README.md#native-windows) for a checkout containing these changes. The unmerged native files are not yet in the `main` bootstrap. No local package installation is needed for the tests. Do not commit, push, or use a real user home without authorization.
+
+---
+
 # Handoff: agentkit 0.2.0 (Codex support) — for testing in Codex
 
 Historical snapshot from before the 0.2.0 release branch was merged. Completed items below may no longer describe the current checkout.
