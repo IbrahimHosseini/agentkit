@@ -23,11 +23,6 @@ for /f "delims=" %%P in ('where py.exe 2^>nul') do (
 echo agentkit requires Python 3.9 or newer. Install Python and reopen your terminal. 1>&2
 exit /b 1
 :run_core
-(
-"%AGENTKIT_PY%" %AGENTKIT_PY_PREFIX% -I "%~dp0..\lib\agentkit.py" %*
-rem Keep the whole termination sequence cached: purge may have deleted this batch.
+rem Keep invocation and termination on one physical line: purge can remove this file.
 rem Native launcher exit codes are 0 for success and 1 for any core failure.
-if errorlevel 1 exit /b 1
-if not errorlevel 0 exit /b 1
-exit /b 0
-)
+"%AGENTKIT_PY%" %AGENTKIT_PY_PREFIX% -I "%~dp0..\lib\agentkit.py" %* && exit /b 0 || exit /b 1
