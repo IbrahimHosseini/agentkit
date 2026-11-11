@@ -13,7 +13,9 @@ The agents follow one workflow. A supervisor plans the work. You approve the pla
 
 | Tool | Need | Used for |
 |---|---|---|
-| macOS or Linux | required | The platform. |
+| macOS or Linux (including WSL2) | required | The platform. See the status below. |
+| Bash 3.2 or newer | required | The installer and CLI. |
+| `curl` | required for the bootstrap command | Download the installer. |
 | `git` | required | Clone and update. |
 | `python3` 3.9 or newer | required | JSON and TOML work. |
 | `claude` or `codex` | at least one is required | The agent CLI you install for. |
@@ -35,6 +37,25 @@ Rules:
 - The check follows `--target`. With `--target claude`, it needs `claude`. `codex` is then optional. With `--target codex`, it needs `codex`. `claude` is then optional. With `--target both`, it needs both. Without `--target`, one of the two is enough.
 - With `--dry-run`, install only reports. It runs nothing.
 
+### Platform status
+
+The requirements check detects package managers, not distribution names.
+
+| Environment | Dependency package manager | Verification coverage |
+|---|---|---|
+| macOS | Homebrew, if present | Existing CI job. |
+| Debian / Ubuntu | `apt-get` | Existing Ubuntu CI job. |
+| Fedora | `dnf` | Container CI configured for Fedora 43. |
+| Arch Linux | `pacman` | Container CI configured for Arch base. |
+| openSUSE | `zypper` | Container CI configured for Tumbleweed. |
+| Alpine Linux | `apk` | Container CI configured for Alpine 3.22. See prerequisites below. |
+| Windows with WSL2 | The Linux distribution's manager | Manual verification required. |
+| Other Linux distributions | Manual prerequisite installation | No distribution-specific CI. |
+
+The four container jobs are configured in `.github/workflows/ci.yml`. They have not been run as part of this change. Package-manager regression tests use isolated stubs. These tests do not prove that a real package installation or a target CLI works on each distribution. WSL2 has not been tested on a Windows machine. Native Windows installation is outside the current scope.
+
+If no supported package manager is found, install Bash, `curl`, `git`, Python 3.9 or newer, and your target CLI yourself. Then use the same Bash installer below. A missing optional tool does not prevent the core install. Non-root dependency installation requires `sudo`; on systems without it, install prerequisites as root first.
+
 ## Install
 
 ```bash
@@ -42,6 +63,34 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 ```
 
 The script clones the repo to `~/.agentkit`. It links the CLI to `~/.local/bin/agentkit`. Then it runs `agentkit install`. Each change to your settings asks for a yes first.
+
+### Alpine prerequisites
+
+The bootstrap needs Bash before it can check dependencies. In an Alpine root shell, install the bootstrap tools first:
+
+```sh
+apk add --no-cache bash curl git python3
+```
+
+Then install a compatible target CLI and run the Bash install command above. [Alpine uses musl](https://www.alpinelinux.org/about/). A working agentkit shell/Python install does not establish compatibility for Claude Code, Codex, Bun, or gstack. Check each upstream tool's requirements. To check the core install without optional gstack or the Claude plugin, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/install.sh | bash -s -- --skip gstack --skip karpathy
+```
+
+### Windows through WSL2
+
+Use a Linux environment in WSL2. Follow the [Microsoft WSL installation guide](https://learn.microsoft.com/en-us/windows/wsl/install). In an administrator PowerShell window:
+
+```powershell
+wsl --install
+```
+
+Restart if requested, then finish the Linux user's setup. Check that the distribution uses version 2 with `wsl --list --verbose` in PowerShell. The default installation uses Ubuntu and WSL2. See [Microsoft's command reference](https://learn.microsoft.com/en-us/windows/wsl/basic-commands) for existing installations and other distributions.
+
+Inside the Linux shell, install the Linux version of your target CLI and run the agentkit install command above. Run both tools from that same Linux environment. Use the Linux home directory for `~/.claude` and `~/.codex`. Do not point `CLAUDE_CONFIG_DIR` or `CODEX_HOME` at your native Windows configuration. This installation does not configure a native Windows CLI or desktop app.
+
+The [manual WSL2 checklist](CONTRIBUTING.md#manual-wsl2-verification) checks agentkit in a temporary home. A successful package-manager simulation is not a successful WSL2 test.
 
 ### What you see
 

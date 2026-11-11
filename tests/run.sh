@@ -1079,6 +1079,110 @@ t_claude_md_duplicate_heading_warns() {
 }
 
 # ------------------------------------------------------------------ requirements
+# Linux (including WSL) reports Linux via uname. These are command stubs, not distro tests.
+mk_linux_requirements_stubs() {
+  printf '#!/bin/sh\nprintf "Linux\\n"\n' > "$T/stubs/uname"
+  printf '#!/bin/sh\nprintf "%%s\\n" "${STUB_UID:-1000}"\n' > "$T/stubs/id"
+  cat > "$T/stubs/sudo" <<'EOF'
+#!/bin/sh
+echo "sudo $*" >> "$STUB_LOG"
+exec "$@"
+EOF
+  chmod +x "$T/stubs/uname" "$T/stubs/id" "$T/stubs/sudo"
+}
+
+mk_package_manager() {
+  cat > "$T/stubs/$1" <<'EOF'
+#!/bin/sh
+echo "$(basename "$0") $*" >> "$STUB_LOG"
+EOF
+  chmod +x "$T/stubs/$1"
+}
+
+t_requirements_linux_package_commands() {
+  mk_linux_requirements_stubs
+  # Make the Homebrew fallback available alongside each native manager.
+  mk_package_manager brew
+  . "$ROOT/lib/requirements.sh"
+  local pm uid tool pkg prefix expected
+  for pm in apt-get dnf pacman zypper apk; do
+    mk_package_manager "$pm"
+    for uid in 0 1000; do
+      export STUB_UID="$uid"
+      req_detect
+      assert_eq "$REQ_OS" linux "Linux/WSL platform detection"
+      assert_eq "$REQ_PM" "$pm" "native manager precedes brew"
+      prefix="sudo "; [ "$uid" = 0 ] && prefix=""
+      for tool in git python3 gh; do
+        pkg="$tool"
+        case "$pm:$tool" in pacman:python3) pkg=python ;; pacman:gh | apk:gh) pkg=github-cli ;; esac
+        case "$pm" in
+          apt-get) expected="${prefix}apt-get install -y $pkg" ;;
+          dnf) expected="${prefix}dnf install -y $pkg" ;;
+          pacman) expected="${prefix}pacman -S --noconfirm $pkg" ;;
+          zypper) expected="${prefix}zypper --non-interactive install $pkg" ;;
+          apk) expected="${prefix}apk add $pkg" ;;
+        esac
+        req_plan "$tool"
+        assert_eq "$REQ_KIND" pm "$pm $tool install kind"
+        assert_eq "$REQ_CMD" "$expected" "$pm $tool uid=$uid command"
+      done
+    done
+    rm -f "$T/stubs/$pm"
+  done
+  req_detect
+  assert_eq "$REQ_PM" brew "Linux Homebrew fallback"
+  assert_nofile "$STUB_LOG"
+}
+
+t_requirements_linux_unknown_manager() {
+  mk_linux_requirements_stubs
+  . "$ROOT/lib/requirements.sh"
+  req_detect
+  assert_eq "$REQ_PM" none "unknown manager"
+  local tool
+  for tool in git python3 gh; do
+    req_plan "$tool"
+    assert_eq "$REQ_KIND" link "manual fallback for $tool"
+    assert_eq "$REQ_CMD" "" "no automatic command for $tool"
+    OUT="$(req_suggest_one "$tool")"
+    assert_contains "install it from https://" "$tool manual instructions"
+  done
+  assert_nofile "$STUB_LOG"
+}
+
+t_requirements_linux_install_consent() {
+  mk_linux_requirements_stubs
+  # Missing git forces the requirements path; fake managers only log, never install.
+  no_tool git
+  local pm prefix args
+  for pm in zypper apk; do
+    mk_package_manager "$pm"
+    PATH="$T/stubs:$REALBIN"
+    no_tool git
+    case "$pm" in zypper) args='--non-interactive install git' ;; apk) args='add git' ;; esac
+    for prefix in '' 'sudo '; do
+      if [ -z "$prefix" ]; then export STUB_UID=0; else export STUB_UID=1000; fi
+      rm -f "$STUB_LOG"
+      run bash -c '. "$1"; YES=1 DRY=1 check_requirements install' _ "$ROOT/lib/requirements.sh"
+      assert_rc_nz "$pm dry-run still lacks git"
+      assert_contains "${prefix}$pm $args"
+      assert_not_contains "Running:"
+      assert_nofile "$STUB_LOG"
+      run bash -c '. "$1"; YES=0 check_requirements install' _ "$ROOT/lib/requirements.sh"
+      assert_rc_nz "$pm without consent still lacks git"
+      assert_contains "No TTY: not running."
+      assert_nofile "$STUB_LOG"
+      run bash -c '. "$1"; YES=1 check_requirements install' _ "$ROOT/lib/requirements.sh"
+      assert_rc_nz "$pm stub does not actually install git"
+      assert_contains "Running: ${prefix}$pm $args"
+      assert_grep "$STUB_LOG" "$pm $args"
+      assert_eq "$(nlines "$STUB_LOG")" "$([ -z "$prefix" ] && echo 1 || echo 2)" "$pm executes once through expected privilege path"
+    done
+    rm -f "$T/stubs/$pm"
+  done
+}
+
 t_requirements_missing_agent_cli() {
   setup_home
   rm -f "$T/stubs/claude"
@@ -2332,6 +2436,9 @@ t_update_refreshes_marked_hooks
 t_install_existing_link
 t_claude_md_duplicate_heading_warns
 t_requirements_missing_agent_cli
+t_requirements_linux_package_commands
+t_requirements_linux_unknown_manager
+t_requirements_linux_install_consent
 t_requirements_missing_git
 t_requirements_other_agent_is_enough
 t_requirements_dry_run_installs_nothing
