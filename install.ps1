@@ -23,17 +23,18 @@ try {
     $python = $null
     $pythonPrefix = @()
     foreach ($candidate in @('python.exe', 'python3.exe', 'py.exe')) {
-        $found = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue
-        if (-not $found) { continue }
         $prefix = @()
         if ($candidate -eq 'py.exe') { $prefix = @('-3') }
-        try {
-            & $found.Source @prefix -I -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)' 2>$null
-        } catch { continue }
-        if ($LASTEXITCODE -eq 0) { $python = $found.Source; $pythonPrefix = $prefix; break }
+        foreach ($found in @(Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue)) {
+            try {
+                & $found.Source @prefix -I -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)' 2>$null
+            } catch { continue }
+            if ($LASTEXITCODE -eq 0) { $python = $found.Source; $pythonPrefix = $prefix; break }
+        }
+        if ($python) { break }
     }
     if (-not $python) { throw 'Python 3.9 or newer is required. Install it from https://www.python.org/downloads/windows/ and reopen your terminal.' }
-    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue
+    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $git) { throw 'Git is required. Install Git for Windows from https://git-scm.com/download/win and reopen your terminal.' }
     $userHome = $env:USERPROFILE
     if (-not $userHome) { $userHome = $env:HOME }

@@ -7,7 +7,11 @@ $taskSource = Join-Path $taskScratch 'source checkout'
 $taskHome = Join-Path $taskScratch 'home فارسی'
 $taskInstall = Join-Path $taskHome 'installed kit'
 $taskPowerShell = (Get-Process -Id $PID).Path
-$taskGit = (Get-Command git -CommandType Application).Source
+$taskGitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path -LiteralPath $_.Source -PathType Leaf } |
+    Select-Object -First 1
+if (-not $taskGitCommand) { throw 'Git is required for the offline bootstrap tests.' }
+$taskGit = $taskGitCommand.Source
 $taskPassed = 0
 $taskFailed = 0
 $taskVariables = @('HOME','USERPROFILE','CODEX_HOME','CLAUDE_CONFIG_DIR','AGENTKIT_HOME','AGENTKIT_REPO','AGENT_LOG_DIR','PATH','GIT_CONFIG_GLOBAL','GIT_CONFIG_NOSYSTEM','GIT_AUTHOR_NAME','GIT_AUTHOR_EMAIL','GIT_COMMITTER_NAME','GIT_COMMITTER_EMAIL','PYTHONUTF8')
