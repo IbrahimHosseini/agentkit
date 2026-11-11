@@ -22,11 +22,11 @@ function Assert-NoReparse([string]$path) {
 try {
     $python = $null
     $pythonPrefix = @()
-    foreach ($candidate in @('python', 'python3', 'py')) {
+    foreach ($candidate in @('python.exe', 'python3.exe', 'py.exe')) {
         $found = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue
         if (-not $found) { continue }
         $prefix = @()
-        if ($candidate -eq 'py') { $prefix = @('-3') }
+        if ($candidate -eq 'py.exe') { $prefix = @('-3') }
         try {
             & $found.Source @prefix -I -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)' 2>$null
         } catch { continue }

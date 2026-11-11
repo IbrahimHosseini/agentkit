@@ -218,7 +218,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 dry() { say "[dry-run] $*"; }
 skipped() { case "$SKIPS" in *" $1 "*) return 0 ;; esac; return 1; }
 
-QUIET=0 DRY=0 YES=0 FORCE=0 PURGE=0 PROJECT="" SKIPS=" " TARGET_OPT="" TARGETS="" CUR=""
+QUIET=0 DRY=0 YES=0 PROJECT="" SKIPS=" " TARGET_OPT="" TARGETS="" CUR=""
 TS="$(date +%Y%m%d-%H%M%S)"
 WORK=""
 cleanup() { if [ -n "$WORK" ] && [ -d "$WORK" ]; then rm -rf "${WORK:?}"; fi; }
@@ -299,9 +299,9 @@ parse_args() {
       --project=*) PROJECT="${1#--project=}" ;;
       --dry-run) DRY=1 ;;
       --yes | -y) YES=1 ;;
-      --force) FORCE=1 ;;
+      --force) : ;;
       --quiet) QUIET=1 ;;
-      --purge) PURGE=1 ;;
+      --purge) : ;;
       --target) [ $# -ge 2 ] || die "--target needs claude, codex or both"; set_target_opt "$2"; shift ;;
       --target=*) set_target_opt "${1#--target=}" ;;
       --skip)
@@ -340,20 +340,13 @@ set_target() {
   if [ "$1" = codex ]; then
     TARGET="$CODEX_HOME"
     SETTINGS=""
-    INSTR_MD="$CODEX_HOME/AGENTS.md"
-    INSTR_SNIP="$AGENTKIT_HOME/templates/AGENTS.md.snippet"
-    INSTR_LABEL="AGENTS.md"
   else
     if [ -n "$PROJECT" ]; then
       TARGET="$PROJECT/.claude"
-      INSTR_MD="$PROJECT/CLAUDE.md"
     else
       TARGET="$CLAUDE_HOME"
-      INSTR_MD="$CLAUDE_HOME/CLAUDE.md"
     fi
     SETTINGS="$TARGET/settings.json"
-    INSTR_SNIP="$AGENTKIT_HOME/templates/CLAUDE.md.snippet"
-    INSTR_LABEL="CLAUDE.md"
   fi
   STATE="$TARGET/agentkit"
   MANIFEST="$STATE/manifest.json"

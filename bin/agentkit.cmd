@@ -1,25 +1,28 @@
 @echo off
 setlocal DisableDelayedExpansion
-python -I -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>nul
-if errorlevel 1 goto use_python3
-(
-python -I "%~dp0..\lib\agentkit.py" %*
-exit /b
+rem Resolve executable interpreters explicitly: a nested .cmd must not take over this batch.
+set "AGENTKIT_PY_PREFIX="
+for %%N in (python.exe python3.exe) do (
+  for /f "delims=" %%P in ('where %%N 2^>nul') do (
+    "%%P" -I -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>nul
+    if not errorlevel 1 (
+      set "AGENTKIT_PY=%%P"
+      goto run_core
+    )
+  )
 )
-:use_python3
-python3 -I -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>nul
-if errorlevel 1 goto use_py
-(
-python3 -I "%~dp0..\lib\agentkit.py" %*
-exit /b
+for /f "delims=" %%P in ('where py.exe 2^>nul') do (
+  "%%P" -3 -I -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>nul
+  if not errorlevel 1 (
+    set "AGENTKIT_PY=%%P"
+    set "AGENTKIT_PY_PREFIX=-3"
+    goto run_core
+  )
 )
-:use_py
-py -3 -I -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>nul
-if errorlevel 1 goto missing
-(
-py -3 -I "%~dp0..\lib\agentkit.py" %*
-exit /b
-)
-:missing
 echo agentkit requires Python 3.9 or newer. Install Python and reopen your terminal. 1>&2
 exit /b 1
+:run_core
+(
+"%AGENTKIT_PY%" %AGENTKIT_PY_PREFIX% -I "%~dp0..\lib\agentkit.py" %*
+exit /b
+)

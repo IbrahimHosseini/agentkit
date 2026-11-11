@@ -27,10 +27,18 @@ class PlatformTests(unittest.TestCase):
     def test_simulated_cmd_rejects_unrepresentable_shell_arguments(self):
         # list2cmdline alone follows C-runtime rules, not CMD shell escaping.
         with mock.patch.object(platforms, 'is_windows', return_value=True), mock.patch.object(platforms, 'find_command', return_value='target.cmd'):
-            for argument in ('&echo.INJECTED', '|echo.INJECTED', '<file', '>file', '^escape', '%CANARY%', '!CANARY!', 'line\nbreak', 'line\rbreak'):
+            for argument in ('&echo.INJECTED', '|echo.INJECTED', '<file', '>file', '^escape', '%CANARY%', '!CANARY!', 'bad\"argument', 'line\nbreak', 'line\rbreak'):
                 with self.subTest(argument=argument):
                     with self.assertRaises(ValueError):
                         platforms.command_args(['target', argument])
+
+    def test_simulated_cmd_boundary_keeps_shell_quotes_without_c_runtime_reescaping(self):
+        executable = r'C:\tools with spaces\fake.cmd'
+        with mock.patch.object(platforms, 'is_windows', return_value=True), mock.patch.object(platforms, 'find_command', return_value=executable):
+            command = platforms.command_args(['fake', '--version'])
+        self.assertIsInstance(command, str)
+        self.assertTrue(command.endswith('/d /s /c ""' + executable + '" --version"'), command)
+        self.assertNotIn('\\"', command)
 
     @unittest.skipUnless(os.name == 'nt', 'requires actual native Windows')
     def test_actual_cmd_launch_from_directory_with_spaces(self):

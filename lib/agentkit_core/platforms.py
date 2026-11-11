@@ -3,7 +3,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 
 def is_windows() -> bool:
@@ -18,14 +18,16 @@ def find_command(name: str) -> Optional[str]:
     return shutil.which(name)
 
 
-def command_args(args: List[str]) -> List[str]:
+def command_args(args: List[str]) -> Union[List[str], str]:
     executable = find_command(args[0]) or args[0]
     if is_windows() and Path(executable).suffix.lower() in ('.cmd', '.bat'):
-        if any(any(c in value for c in '&|<>^%!\r\n') for value in [executable] + args[1:]):
+        if any(any(c in value for c in '&|<>^%!\"\r\n') for value in [executable] + args[1:]):
             raise ValueError('unsafe cmd launcher argument; use a native executable for these characters')
-        # cmd's /s /c has an additional outer quotation layer.
-        return [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/s', '/c',
-                '"' + subprocess.list2cmdline([executable] + args[1:]) + '"']
+        # Pass one Windows command line: a sequence would make Popen apply
+        # C-runtime escaping again to CMD's already quoted /s /c command.
+        prefix = subprocess.list2cmdline([os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/s', '/c'])
+        command = subprocess.list2cmdline([executable] + args[1:])
+        return prefix + ' "' + command + '"'
     return [executable] + args[1:]
 
 
