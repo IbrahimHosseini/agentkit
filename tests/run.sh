@@ -38,8 +38,9 @@ export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid GIT_COMMITTER_
 export GIT_CONFIG_NOSYSTEM=1
 
 # The "upstream": a bare repo made from a temp copy of the working tree (without tests/ and .git).
+# Container tests run as root: keep scratch files owned by the test user, not the archive's owner.
 mkdir -p "$SUITE/work"
-(cd "$ROOT" && tar -cf - --exclude=./tests --exclude=./.git --exclude=__pycache__ --exclude=.DS_Store .) | (cd "$SUITE/work" && tar -xf -) \
+(cd "$ROOT" && tar -cf - --exclude=./tests --exclude=./.git --exclude=__pycache__ --exclude=.DS_Store .) | (cd "$SUITE/work" && tar --no-same-owner -xf -) \
   || { echo "cannot copy the working tree" >&2; exit 2; }
 (
   cd "$SUITE/work" && PATH="$REALBIN" && git init -q . && git symbolic-ref HEAD refs/heads/main \
