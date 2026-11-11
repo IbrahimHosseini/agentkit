@@ -1,6 +1,5 @@
 @echo off
 setlocal DisableDelayedExpansion
-rem Keep dynamic ERRORLEVEL available for numeric-only second expansion below.
 set "ERRORLEVEL="
 rem Resolve executable interpreters explicitly: a nested .cmd must not take over this batch.
 set "AGENTKIT_PY_PREFIX="
@@ -26,8 +25,9 @@ exit /b 1
 :run_core
 (
 "%AGENTKIT_PY%" %AGENTKIT_PY_PREFIX% -I "%~dp0..\lib\agentkit.py" %*
-rem Capture only the numeric status after user arguments have been consumed.
-call set "AGENTKIT_EXIT=%%errorlevel%%"
-setlocal EnableDelayedExpansion
-exit /b !AGENTKIT_EXIT!
+rem Keep the whole termination sequence cached: purge may have deleted this batch.
+rem Native launcher exit codes are 0 for success and 1 for any core failure.
+if errorlevel 1 exit /b 1
+if not errorlevel 0 exit /b 1
+exit /b 0
 )
