@@ -60,7 +60,7 @@ req_detect() {
     Darwin) REQ_OS=mac; command -v brew > /dev/null 2>&1 && REQ_PM=brew ;;
     Linux)
       REQ_OS=linux
-      for p in apt-get dnf pacman brew; do
+      for p in apt-get dnf pacman zypper apk brew; do
         if command -v "$p" > /dev/null 2>&1; then REQ_PM="$p"; break; fi
       done
       ;;
@@ -169,13 +169,15 @@ req_plan() {
   case "$REQ_PM:$t" in
     brew:python3) pkg="python@3.12" ;;
     pacman:python3) pkg="python" ;;
-    pacman:gh) pkg="github-cli" ;;
+    pacman:gh | apk:gh) pkg="github-cli" ;;
   esac
   case "$REQ_PM" in
     brew) REQ_KIND=pm; REQ_CMD="brew install $pkg" ;;
     apt-get) REQ_KIND=pm; REQ_CMD="${REQ_SUDO}apt-get install -y $pkg" ;;
     dnf) REQ_KIND=pm; REQ_CMD="${REQ_SUDO}dnf install -y $pkg" ;;
     pacman) REQ_KIND=pm; REQ_CMD="${REQ_SUDO}pacman -S --noconfirm $pkg" ;;
+    zypper) REQ_KIND=pm; REQ_CMD="${REQ_SUDO}zypper --non-interactive install $pkg" ;;
+    apk) REQ_KIND=pm; REQ_CMD="${REQ_SUDO}apk add $pkg" ;;
   esac
 }
 

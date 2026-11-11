@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Linux dependency installation through `zypper` and `apk`, including the Alpine `github-cli` package name.
+- Isolated package-manager regression tests and container CI jobs for Fedora, Arch, openSUSE Tumbleweed, and Alpine. Container runs remain unverified for this change.
+- Platform status, Alpine bootstrap prerequisites, and Windows WSL2 setup and manual verification instructions. Actual WSL2 verification remains pending.
+
 ### Changed
 
 - Agent body instructions use host-native skill, web and delegation capabilities instead of Claude tool names. Claude tool lists and Codex sandbox rules are unchanged.

@@ -72,7 +72,7 @@ scripts/validate.sh
 bash tests/run.sh
 ```
 
-`validate.sh` checks agent and skill frontmatter, personal paths, Python compile, the hook unit tests, JSON files, that `plugin.json` version equals `VERSION`, `bash -n` on the scripts, and shellcheck (with `--severity=warning`) when it is installed. CI runs the same two commands on Ubuntu and macOS.
+`validate.sh` checks agent and skill frontmatter, personal paths, Python compile, the hook unit tests, JSON files, that `plugin.json` version equals `VERSION`, `bash -n` on the scripts, and shellcheck (with `--severity=warning`) when it is installed. CI runs the same two commands on Ubuntu and macOS. The workflow also defines container jobs for Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22. These jobs install test prerequisites inside disposable containers. The container jobs have not been run as part of this change. They test agentkit with fake target CLIs, not real Claude Code, Codex, Bun, or gstack installations.
 
 You can run the hook tests alone:
 
@@ -85,6 +85,40 @@ Test the CLI in a temporary home. Never test against your real `~/.claude`:
 ```bash
 HOME="$(mktemp -d)" bin/agentkit install --dry-run
 ```
+
+### Manual WSL2 verification
+
+This is a manual checklist, not a report of a completed WSL2 test. Use a WSL2 Linux shell with Bash, Git, Python 3.9 or newer, and a working Linux `codex` CLI already installed. Run from a repository checkout. The clone below tests its committed revision; it does not copy uncommitted edits.
+
+The subshell uses a temporary home and a separate clone. Its update pulls from the original checkout without changing that checkout. Optional integrations are skipped. Do not add `--force` or `--purge`.
+
+```bash
+(
+  set -eu
+  agentkit_source="$PWD"
+  agentkit_scratch=$(mktemp -d)
+  export HOME="$agentkit_scratch/home"
+  export CODEX_HOME="$HOME/.codex"
+  export CLAUDE_CONFIG_DIR="$HOME/.claude"
+  export AGENTKIT_HOME="$agentkit_scratch/agentkit"
+  mkdir -p "$HOME"
+  git clone --no-hardlinks "$agentkit_source" "$AGENTKIT_HOME"
+  bash "$AGENTKIT_HOME/bin/agentkit" install --target codex --dry-run --skip gstack --skip karpathy
+  bash "$AGENTKIT_HOME/bin/agentkit" install --target codex --yes --skip gstack --skip karpathy
+  test -s "$CODEX_HOME/config.toml"
+  test -s "$CODEX_HOME/agents/backend.toml"
+  bash "$AGENTKIT_HOME/bin/agentkit" doctor --target codex
+  bash "$AGENTKIT_HOME/bin/agentkit" update --target codex
+  bash "$AGENTKIT_HOME/bin/agentkit" doctor --target codex
+  bash "$AGENTKIT_HOME/bin/agentkit" uninstall --target codex --yes
+  test ! -e "$CODEX_HOME/agents/backend.toml"
+  printf 'Inspect the test files in %s\n' "$agentkit_scratch"
+)
+```
+
+Check that each command succeeds. Doctor can report that the skipped gstack integration is absent. Inspect the temporary configuration and backups after uninstall. Repeat with `--target claude` if Claude Code is the target, and inspect the temporary `.claude` files instead. Keep the WSL version, distribution version, target CLI version, commit, command output, and exit status with the test report. A CLI that exists only through Windows PATH forwarding does not verify the Linux target.
+
+For a real agent session, use the temporary target configuration explicitly and verify that a custom agent can run. File installation alone does not verify agent execution. Keep the temporary home until you have inspected it; delete it manually afterward.
 
 ## Sync agents (maintainer)
 

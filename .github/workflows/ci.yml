@@ -22,3 +22,42 @@ jobs:
       - name: Tests
         run: |
           if [ -f tests/run.sh ]; then bash tests/run.sh; else echo "no tests/run.sh"; fi
+
+  linux-distros:
+    name: Linux (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: Fedora
+            image: fedora:43
+            install: dnf install -y bash git python3 tar coreutils findutils diffutils grep sed gawk procps-ng
+          - distro: Arch
+            image: archlinux:base
+            install: pacman -Syu --noconfirm bash git python tar coreutils findutils diffutils grep sed gawk procps-ng
+          - distro: openSUSE Tumbleweed
+            image: opensuse/tumbleweed:latest
+            install: zypper --non-interactive install bash git python3 tar coreutils findutils diffutils grep sed gawk procps
+          - distro: Alpine
+            image: alpine:3.22
+            install: apk add --no-cache bash git python3 tar coreutils findutils diffutils grep sed gawk procps
+    steps:
+      # Checkout runs on the Ubuntu host, so Alpine does not need to run Node actions.
+      - uses: actions/checkout@v4
+      - name: Validate and test in distribution userspace
+        env:
+          DISTRO_IMAGE: ${{ matrix.image }}
+          DISTRO_INSTALL: ${{ matrix.install }}
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            --env DISTRO_INSTALL \
+            "$DISTRO_IMAGE" sh -eu -c '
+              sh -eu -c "$DISTRO_INSTALL"
+              scratch_home=$(mktemp -d)
+              export HOME="$scratch_home" CODEX_HOME="$scratch_home/.codex"
+              bash scripts/validate.sh
+              bash tests/run.sh
+            '
