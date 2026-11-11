@@ -10,8 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Linux dependency installation through `zypper` and `apk`, including the Alpine `github-cli` package name.
 - Isolated package-manager regression tests and container CI jobs for Fedora, Arch, openSUSE Tumbleweed, and Alpine. The pre-rewrite run at `bc897d1` passed all four containers and the existing Ubuntu/macOS jobs.
 - Platform status, Alpine bootstrap prerequisites, and Windows WSL2 setup and manual verification instructions. Actual WSL2 verification remains pending.
-
-- Native Windows launcher and PowerShell bootstrap for the shared Python lifecycle. Native Windows verification is pending.
+- Native Windows launcher and PowerShell bootstrap for the shared Python lifecycle. Lifecycle and PowerShell bootstrap tests passed with Python 3.9 and 3.13 in the [12-job CI run at `c1ffb78`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42971871993).
 - Offline lifecycle, path, managed-file, and bootstrap tests. CI includes Python 3.9 and 3.13 on Linux, macOS, and Windows.
 
 ### Changed

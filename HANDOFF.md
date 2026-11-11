@@ -1,6 +1,6 @@
 # Current work: native Windows and shared Python lifecycle
 
-Branch: `codex/windows-native`. Base commit: `bc897d1`. This section describes current work. The original 0.2.0 handoff below is historical.
+Branch: `codex/windows-native`. Base commit: `bc897d1`. Linux support is merged into `main` at `c85abdc`. This branch includes that merge and the native Windows work. The native Windows work is not yet merged into `main`. This section describes current work. The original 0.2.0 handoff below is historical.
 
 ## Scope and layout
 
@@ -14,7 +14,7 @@ Branch: `codex/windows-native`. Base commit: `bc897d1`. This section describes c
 
 The [Linux CI run at `bc897d1`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42948209369) passed macOS, Ubuntu, Fedora, Arch, openSUSE, and Alpine before the shared-core rewrite. The four distro suites each reported 81 passed, zero failed, and one known-bug XFAIL. The container setup uses `tar --no-same-owner` so root does not restore checkout ownership into the scratch Git upstream.
 
-Native Windows runtime verification and CI results for the shared-core rewrite are pending. PowerShell is not available on the local macOS host. The new workflow defines Linux, macOS, and Windows tests with Python 3.9 and 3.13. Fake target CLIs and local Git upstreams verify agentkit behavior; they do not verify a real custom-agent session. WSL2 testing on Windows also remains pending.
+The [shared-core CI run at `c1ffb78`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42971871993) passed all 12 jobs. It covered the existing Ubuntu and macOS shell checks, Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers, and Python 3.9 and 3.13 on Linux, macOS, and native Windows. Each Windows Python suite reported 48 tests: 38 passed and ten skipped for platform or privilege limits. Each Windows PowerShell suite reported 12 passed, zero failed, and 12 total. The PowerShell cases include owned launcher self-purge, junction guards, preservation of foreign or edited launchers, and removal of read-only Git objects. Fake target CLIs and local Git upstreams verify agentkit behavior. They do not verify a real custom-agent session. WSL2 testing on Windows remains pending. PowerShell is not available on the local macOS host.
 
 ## Current checks
 

@@ -48,17 +48,17 @@ The requirements check detects package managers, not distribution names.
 |---|---|---|
 | macOS | Homebrew, if present | Existing CI job. |
 | Debian / Ubuntu | `apt-get` | Existing Ubuntu CI job. |
-| Fedora | `dnf` | Fedora 43 container CI passed at `bc897d1`. |
-| Arch Linux | `pacman` | Arch base container CI passed at `bc897d1`. |
-| openSUSE | `zypper` | Tumbleweed container CI passed at `bc897d1`. |
-| Alpine Linux | `apk` | Alpine 3.22 container CI passed at `bc897d1`. See prerequisites below. |
-| Native Windows | Manual prerequisite installation | Python 3.9/3.13 CI configured. Native verification is pending. |
+| Fedora | `dnf` | Fedora 43 container CI passed at `c1ffb78`. |
+| Arch Linux | `pacman` | Arch base container CI passed at `c1ffb78`. |
+| openSUSE | `zypper` | Tumbleweed container CI passed at `c1ffb78`. |
+| Alpine Linux | `apk` | Alpine 3.22 container CI passed at `c1ffb78`. See prerequisites below. |
+| Native Windows | Manual prerequisite installation | Python 3.9/3.13 lifecycle and PowerShell bootstrap tests passed at `c1ffb78`. |
 | Windows with WSL2 | The Linux distribution's manager | Manual verification required. |
 | Other Linux distributions | Manual prerequisite installation | No distribution-specific CI. |
 
-The [Linux distribution run at `bc897d1`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42948209369) passed on macOS, Ubuntu, Fedora, Arch, openSUSE, and Alpine. Each of the four container suites reported 81 passed, zero failed, and one known-bug XFAIL. This result predates the shared Python rewrite. The new workflow also tests the shared core on Linux, macOS, and Windows with Python 3.9 and 3.13. Results for that rewrite are pending. Tests use fake target CLIs and local Git repositories. They do not prove that real Claude Code, Codex, Bun, or gstack runs on each distribution. WSL2 has not been tested on a Windows machine.
+The [shared-core CI run at `c1ffb78`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42971871993) passed all 12 jobs. It covered the existing Ubuntu and macOS shell checks, Fedora 43, Arch base, openSUSE Tumbleweed, and Alpine 3.22 containers, and Python 3.9 and 3.13 on Linux, macOS, and native Windows. Each Windows Python suite reported 48 tests: 38 passed and ten skipped for platform or privilege limits. Each Windows PowerShell suite reported 12 passed, zero failed, and 12 total. Tests use fake target CLIs and local Git repositories. They do not verify real Claude Code, Codex, Bun, or gstack execution. WSL2 has not been tested on a Windows machine.
 
-If no supported package manager is found, install Bash, `curl`, `git`, Python 3.9 or newer, and your target CLI yourself. Then use the same Bash installer below. A missing optional tool does not prevent the core install. Non-root dependency installation requires `sudo`; on systems without it, install prerequisites as root first.
+On Linux, if no supported package manager is found, install Bash, `curl`, `git`, Python 3.9 or newer, and your target CLI yourself. Then use the same Bash installer below. A missing optional tool does not prevent the core install. Non-root dependency installation requires `sudo`; on systems without it, install prerequisites as root first.
 
 ## Install
 
@@ -84,7 +84,7 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 
 ### Native Windows
 
-Native Windows support is under verification on this branch. Use a checkout that contains `install.ps1`, `bin/agentkit.cmd`, and `lib/agentkit.py`. The `main` bootstrap command does not install these unmerged changes.
+Native Windows support passed CI on this branch. Use a checkout that contains `install.ps1`, `bin/agentkit.cmd`, and `lib/agentkit.py`. The `main` bootstrap command does not install these unmerged changes.
 
 Install Python 3.9 or newer, Git for Windows, and the native `claude` or `codex` CLI first. Add these tools to PATH and open a new terminal. The bootstrap prints guidance for missing prerequisites. It does not install them.
 
@@ -107,7 +107,7 @@ python -I .\lib\agentkit.py doctor --target codex
 
 Native Windows runs `install`, `update`, `doctor`, `uninstall`, `version`, and `help` through the same Python engine as macOS and Linux. Default target folders are `%USERPROFILE%\.claude` and `%USERPROFILE%\.codex`. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override them. Keep Windows and WSL configurations separate.
 
-The first native version does not install gstack, the Karpathy plugin, Bash hooks, or auto-update hooks. It prints this limit. `auto-update`, `log`, and `feedback` remain POSIX commands. Codex agents can still include the bundled Karpathy instruction text. A `.cmd` or `.bat` target command cannot use shell metacharacters in its executable path or arguments: `& | < > ^ % !`, carriage returns, or newlines. Use a native executable or a path without these characters.
+The first native version does not install gstack, the Karpathy plugin, Bash hooks, or auto-update hooks. It prints this limit. `auto-update`, `log`, and `feedback` remain POSIX commands. Codex agents can still include the bundled Karpathy instruction text. A `.cmd` or `.bat` target command cannot use shell metacharacters in its executable path or arguments: `& | < > ^ % !`, embedded double quotes, carriage returns, or newlines. This restriction does not apply to native `.exe` arguments. Use a native executable or a path without these characters.
 
 ### Upgrade an existing installation
 
