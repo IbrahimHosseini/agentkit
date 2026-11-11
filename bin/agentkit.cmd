@@ -1,5 +1,7 @@
 @echo off
 setlocal DisableDelayedExpansion
+rem Keep dynamic ERRORLEVEL available for numeric-only second expansion below.
+set "ERRORLEVEL="
 rem Resolve executable interpreters explicitly: a nested .cmd must not take over this batch.
 set "AGENTKIT_PY_PREFIX="
 for %%N in (python.exe python3.exe) do (
@@ -24,5 +26,6 @@ exit /b 1
 :run_core
 (
 "%AGENTKIT_PY%" %AGENTKIT_PY_PREFIX% -I "%~dp0..\lib\agentkit.py" %*
-exit /b
+rem CALL re-expands only the numeric exit code, never the forwarded user arguments.
+call exit /b %%errorlevel%%
 )

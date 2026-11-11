@@ -176,6 +176,36 @@ try {
             if (Test-Path -LiteralPath $userJunction) { [IO.Directory]::Delete($userJunction) }
         }
     }
+    Check-Case 'force install preserves outside skill bytes behind junction parent' {
+        $skillHome = Join-Path $taskScratch 'skill junction home'
+        [IO.Directory]::CreateDirectory($skillHome) | Out-Null
+        $env:HOME = $skillHome
+        $env:USERPROFILE = $skillHome
+        $env:AGENTKIT_HOME = Join-Path $skillHome '.agentkit'
+        $env:CODEX_HOME = Join-Path $skillHome '.codex'
+        $env:CLAUDE_CONFIG_DIR = Join-Path $skillHome '.claude'
+        $env:AGENT_LOG_DIR = Join-Path $skillHome 'logs'
+        Invoke-Bootstrap -arguments @('--yes','--target','codex','--skip','gstack','--skip','karpathy')
+        Assert-That ($taskExit -eq 0) $taskOutput
+        $skills = Join-Path $env:CODEX_HOME 'skills'
+        $savedSkills = Join-Path $skillHome 'saved skills'
+        Move-Item -LiteralPath $skills -Destination $savedSkills
+        $outside = Join-Path $taskScratch 'outside skill junction'
+        $foreign = Join-Path $outside 'agent-report'
+        [IO.Directory]::CreateDirectory($foreign) | Out-Null
+        $sentinel = Join-Path $foreign 'keep.txt'
+        [IO.File]::WriteAllText($sentinel, 'outside user skill bytes')
+        New-Item -ItemType Junction -Path $skills -Target $outside | Out-Null
+        try {
+            # The safety contract permits refusal, but never external mutation.
+            Invoke-Bootstrap -arguments @('--yes','--target','codex','--force','--skip','gstack','--skip','karpathy')
+            Assert-That (Test-Path -LiteralPath $sentinel) 'force install deleted outside user skill'
+            Assert-That ([IO.File]::ReadAllText($sentinel) -eq 'outside user skill bytes') 'outside skill bytes changed'
+            Assert-That (@(Get-ChildItem -LiteralPath $outside -Recurse -File).Count -eq 1) 'force install wrote external skill files'
+        } finally {
+            if (Test-Path -LiteralPath $skills) { [IO.Directory]::Delete($skills) }
+        }
+    }
     foreach ($launcherKind in @('edited', 'foreign')) {
         Check-Case "$launcherKind launcher survives default-clone purge" {
             $purgeHome = Join-Path $taskScratch "$launcherKind purge home"

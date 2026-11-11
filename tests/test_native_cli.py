@@ -409,6 +409,21 @@ class NativeLifecycleTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in outside.iterdir()), ['agentkit', 'keep'])
 
     @unittest.skipIf(os.name == 'nt', 'symlink privileges are not required on Windows')
+    def test_force_install_never_deletes_skill_content_through_linked_skills_parent(self):
+        outside = self.scratch / 'outside skills'
+        foreign = outside / 'agent-report'
+        foreign.mkdir(parents=True)
+        (foreign / 'keep.txt').write_bytes(b'user-owned skill bytes\r\n')
+        (outside / 'unrelated').mkdir()
+        (outside / 'unrelated/keep.txt').write_bytes(b'another user file')
+        before = tree_bytes(outside)
+        self.codex.mkdir(parents=True)
+        (self.codex / 'skills').symlink_to(outside, target_is_directory=True)
+        self.cli('install', '--target', 'codex', '--yes', '--force', '--skip', 'gstack', '--skip', 'karpathy', expected=None)
+        self.assertEqual(tree_bytes(outside), before, 'force install mutated data through linked skills parent')
+        self.assertTrue((self.codex / 'skills').is_symlink())
+
+    @unittest.skipIf(os.name == 'nt', 'symlink privileges are not required on Windows')
     def test_state_directory_symlink_does_not_write_outside_target(self):
         outside = self.scratch / 'outside state'
         outside.mkdir()

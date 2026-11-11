@@ -169,6 +169,14 @@ class Lifecycle:
         self.rows.append((self.current, path.name, status))
 
     def sources(self, temporary: Path, old: dict) -> tuple:
+        # Validate managed-tree boundaries before preparation can back up or
+        # replace a foreign skill directory. --force never follows a parent.
+        for category in ('agents', 'skills'):
+            if category == 'skills' and 'skills' in self.args.skip:
+                continue
+            directory = self.target / category
+            if linked_parent(directory, self.target):
+                raise ValueError('refusing linked parent directory: ' + str(directory))
         files = {}
         eligible = temporary / 'sources'
         rendered = temporary / 'rendered'
@@ -197,6 +205,10 @@ class Lifecycle:
                 if self.current == 'codex' and folder.name not in ('agent-report', 'security-audit', 'write-swift'):
                     continue
                 dest = self.target / 'skills' / folder.name
+                if linked_parent(dest.parent, self.target):
+                    raise ValueError('refusing linked parent directory: ' + str(dest.parent))
+                if linked_parent(dest, self.target) and not dest.is_symlink():
+                    raise ValueError('refusing reparse point skill directory: ' + str(dest))
                 source_files = [f for f in folder.rglob('*') if f.is_file() and f.name != '.DS_Store' and f.suffix != '.pyc']
                 managed = any(k.startswith('skills/' + folder.name + '/') for k in old)
                 identical = not dest.is_symlink() and all((dest / f.relative_to(folder)).is_file() and digest(dest / f.relative_to(folder)) == digest(f) for f in source_files)
