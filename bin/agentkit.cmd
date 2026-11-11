@@ -26,6 +26,8 @@ exit /b 1
 :run_core
 (
 "%AGENTKIT_PY%" %AGENTKIT_PY_PREFIX% -I "%~dp0..\lib\agentkit.py" %*
-rem CALL re-expands only the numeric exit code, never the forwarded user arguments.
-call exit /b %%errorlevel%%
+rem Capture only the numeric status after user arguments have been consumed.
+call set "AGENTKIT_EXIT=%%errorlevel%%"
+setlocal EnableDelayedExpansion
+exit /b !AGENTKIT_EXIT!
 )

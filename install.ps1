@@ -56,7 +56,7 @@ try {
         exit 0
     } else {
         if (-not (Confirm-Change "Clone agentkit into $destination?")) { throw 'Clone declined. Use --yes to accept in a noninteractive terminal.' }
-        & $git.Source clone -- $repo $destination
+        & $git.Source clone --no-hardlinks -- $repo $destination
         if ($LASTEXITCODE -ne 0) { throw 'Git clone failed.' }
     }
     $entry = Join-Path $destination 'lib/agentkit.py'

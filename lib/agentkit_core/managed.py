@@ -64,3 +64,33 @@ def linked_parent(path: Path, root: Path) -> bool:
         except FileNotFoundError:
             pass
     return False
+
+
+def remove_guarded_tree(path: Path) -> None:
+    """Remove an already-authorized purge tree, including Windows Git objects.
+
+    Only a read-only regular file may have its writable bit restored, and only
+    after rmtree fails to unlink that file. Never retry through a reparse point.
+    """
+    import stat
+
+    root = path.absolute()
+
+    def retry_read_only_file(function, filename, error_info):
+        error = error_info[1]
+        child = Path(filename).absolute()
+        if (os.name != 'nt' or not isinstance(error, PermissionError)
+                or function not in (os.unlink, os.remove)
+                or not child.is_relative_to(root)
+                or linked_parent(child, root)):
+            raise error
+        details = child.stat()
+        mode = details.st_mode
+        if details.st_nlink > 1:
+            raise PermissionError('refusing to change attributes of a hard-linked read-only file: ' + str(child)) from error
+        if not stat.S_ISREG(mode) or mode & stat.S_IWRITE:
+            raise error
+        child.chmod(mode | stat.S_IWRITE)
+        function(filename)
+
+    shutil.rmtree(root, onerror=retry_read_only_file)

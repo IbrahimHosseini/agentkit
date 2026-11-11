@@ -14,7 +14,7 @@ from typing import List
 
 import codex
 from . import integrations, platforms
-from .managed import atomic_write, digest, linked_parent, load_manifest
+from .managed import atomic_write, digest, linked_parent, load_manifest, remove_guarded_tree
 
 ROOT = Path(__file__).resolve().parents[2]
 START = '<!-- agentkit:start -->'
@@ -401,7 +401,7 @@ class Lifecycle:
                         except OSError:
                             pass
                 if self.args.purge and (self.target / 'agentkit').exists():
-                    shutil.rmtree(self.target / 'agentkit')
+                    remove_guarded_tree(self.target / 'agentkit')
         self.say('Not removed: gstack and the karpathy plugin.')
         if 'claude' in self.targets():
             self.say('  gstack:   delete ' + str(self.homes['claude'] / 'skills/gstack') + ' and the settings.json entries marked _gstack_source')
@@ -425,7 +425,7 @@ class Lifecycle:
                                 native_link.unlink()
                             else:
                                 self.warn('Kept edited or foreign launcher: ' + str(native_link))
-                    shutil.rmtree(self.root)
+                    remove_guarded_tree(self.root)
             else:
                 self.say('Kept ' + str(self.root) + ' (not the default ~/.agentkit git clone). Delete it by hand if you want.')
 
