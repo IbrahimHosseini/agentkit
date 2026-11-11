@@ -23,6 +23,5 @@ for /f "delims=" %%P in ('where py.exe 2^>nul') do (
 echo agentkit requires Python 3.9 or newer. Install Python and reopen your terminal. 1>&2
 exit /b 1
 :run_core
-rem Keep invocation and termination on one physical line: purge can remove this file.
-rem Native launcher exit codes are 0 for success and 1 for any core failure.
-"%AGENTKIT_PY%" %AGENTKIT_PY_PREFIX% -I "%~dp0..\lib\agentkit.py" %* && exit /b 0 || exit /b 1
+rem Leave batch context before the synchronous core can purge this launcher.
+(goto) 2>nul & "%AGENTKIT_PY%" %AGENTKIT_PY_PREFIX% -I "%~dp0..\lib\agentkit.py" %*
