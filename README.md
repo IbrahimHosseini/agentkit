@@ -1,7 +1,7 @@
 # agentkit
 
 <p align="center">
-  <img src="assets/agentkit-icon.svg" alt="agentkit cat" width="96" height="96">
+  <img src="assets/agentkit-icon.png" alt="agentkit cat" width="96" height="96">
 </p>
 
 [![CI](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml)
