@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-14
+
+### Changed
+
+- User-level Claude installation on macOS and Linux includes the SessionStart auto-update hook by default. Install still requires confirmation or `--yes` before adding it. `--project` does not add this hook by default. `--skip hooks` and `--dry-run` retain their behavior.
+- `agentkit auto-update off` saves the choice across updates and repeated installations. `agentkit auto-update on` enables the hook again.
+- Updates preserve existing hook state. Older installations without an auto-update hook stay off until the user enables it. Codex and native Windows still have no auto-update hook.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added
@@ -70,7 +78,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/IbrahimHosseini/agentkit/compare/v0.1.0...v0.1.1

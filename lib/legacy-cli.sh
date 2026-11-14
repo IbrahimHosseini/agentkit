@@ -446,6 +446,16 @@ step_hooks() {
   skipped hooks && { ui_item skipped "hooks: skipped (--skip hooks)"; ui_summary_add "$CUR" hooks skipped; return; }
   hook_apply SubagentStop agentkit-agent-log "$(AGENTLOG_CMD)" 20 "Add the SubagentStop agent-log hook to $SETTINGS?"
   ui_summary_add "$CUR" "SubagentStop hook" "$HOOK_RES"
+  if [ -n "$PROJECT" ]; then
+    ui_item skipped "auto-update: skipped (user installations only)"
+    ui_summary_add "$CUR" "SessionStart hook" skipped
+  elif [ -e "$STATE/auto-update-disabled" ] || [ -L "$STATE/auto-update-disabled" ]; then
+    ui_item skipped "auto-update: off (saved preference; agentkit auto-update on to enable)"
+    ui_summary_add "$CUR" "SessionStart hook" skipped
+  else
+    hook_apply SessionStart agentkit-auto-update "\"$AGENTKIT_HOME/hooks/update-check.sh\"" 5 "Add the SessionStart auto-update hook to $SETTINGS?"
+    ui_summary_add "$CUR" "SessionStart hook" "$HOOK_RES"
+  fi
 }
 
 # ---------------------------------------------------------------- Codex config.toml
@@ -583,11 +593,27 @@ cmd_auto_update() {
   [ $# -gt 0 ] && shift
   parse_args "$@"; ui_init; need_python; claude_only auto-update; resolve_target
   local cmd="$AGENTKIT_HOME/hooks/update-check.sh"
+  local preference="$STATE/auto-update-disabled" path remaining
+  if [ "$sub" = on ] || [ "$sub" = off ]; then
+    for path in "$TARGET" "$STATE" "$STATE/backups" "$preference"; do
+      [ ! -L "$path" ] || die "refusing linked auto-update state: $path"
+    done
+  fi
   case "$sub" in
     on)
       [ -x "$cmd" ] || die "$cmd not found or not executable"
-      hook_apply SessionStart agentkit-auto-update "\"$cmd\"" 5 "Add the SessionStart auto-update hook to $SETTINGS?" ;;
-    off) hook_remove agentkit-auto-update ;;
+      hook_apply SessionStart agentkit-auto-update "\"$cmd\"" 5 "Add the SessionStart auto-update hook to $SETTINGS?" || return 1
+      if [ "$DRY" != 1 ]; then rm -f "$preference" || die "cannot clear auto-update preference"; fi ;;
+    off)
+      py hook-remove "$SETTINGS" agentkit-auto-update check > /dev/null || die "cannot read $SETTINGS"
+      hook_remove agentkit-auto-update
+      if [ "$DRY" = 1 ]; then dry "remember auto-update off"; return 0; fi
+      remaining="$(py hook-remove "$SETTINGS" agentkit-auto-update check)" || die "cannot read $SETTINGS"
+      [ "$remaining" = 0 ] || die "cannot remove auto-update hook"
+      mkdir -p "$STATE" || die "cannot create $STATE"
+      if [ ! -e "$preference" ]; then
+        (set -C; : > "$preference") || die "cannot save auto-update preference"
+      fi ;;
     status)
       if [ -f "$SETTINGS" ] && py hook-has "$SETTINGS" agentkit-auto-update 2> /dev/null; then echo "auto-update: on"; else echo "auto-update: off"; fi ;;
     *) die "usage: agentkit auto-update on|off|status" ;;
