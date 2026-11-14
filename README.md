@@ -1,6 +1,8 @@
 # agentkit
 
-<img src="assets/agentkit-icon.svg" alt="agentkit cat" width="96" height="96">
+<p align="center">
+  <img src="assets/agentkit-icon.svg" alt="agentkit cat" width="96" height="96">
+</p>
 
 [![CI](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/IbrahimHosseini/agentkit)](https://github.com/IbrahimHosseini/agentkit/releases/latest)
@@ -10,6 +12,54 @@
 agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 16 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes on POSIX systems. One command installs it. One command updates it.
 
 The agents follow one workflow. A supervisor plans the work. You approve the plan. Workers do the parts. The supervisor reviews the result. The hook records when an agent breaks a rule, so the team can improve the agent files.
+
+## Features
+
+- **16 specialized agents** for planning, development, design, testing, security, documentation, and content.
+- **Claude Code and Codex support** from the same agent sources, with Codex model and sandbox settings generated during install.
+- **A shared workflow** with supervisor planning, your approval, parallel workers, and review with up to two fix rounds.
+- **Three bundled skills:** `agent-report`, `security-audit`, and `write-swift`.
+- **macOS, Linux, and native Windows support** through a shared Python lifecycle engine. Optional POSIX integrations are listed below.
+- **Managed installation and updates** with backups, dry runs, and preservation of user edits. Upstream changes to edited files are saved as `.agentkit-new` for review.
+- **Installation health checks** with `agentkit doctor`, plus an uninstall command that keeps edited files.
+- **Optional integrations on macOS and Linux:** gstack, the Karpathy plugin, and Claude Code hooks for agent issue logging and auto-update.
+
+## Contents
+
+- [Features](#features)
+- [Quick demo](#quick-demo)
+- [Requirements](#requirements)
+- [Install](#install)
+  - [Native Windows](#native-windows)
+  - [Windows through WSL2](#windows-through-wsl2)
+  - [Targets](#targets)
+  - [Codex](#codex)
+- [Usage and workflow](#usage)
+  - [Agents](#agents)
+- [Updating](#updating)
+- [Agent log](#agent-log)
+- [Health checks: doctor](#doctor)
+- [Uninstall](#uninstall)
+- [Development checks](#development-checks)
+- [Troubleshooting](#troubleshooting)
+- [Dependencies and credits](#dependencies-and-credits)
+- [License](#license)
+
+## Quick demo
+
+![Illustrated walkthrough: get agentkit, install for Claude Code, check the setup, and run the researcher agent](assets/install-to-first-agent.gif)
+
+An illustrated walkthrough for Claude Code on macOS and Linux, with shortened example output. It is not a recording of a live agent session. Have Bash, Git, Python 3.9+, and Claude Code installed, and sign in to Claude Code first. This example skips the optional gstack and Karpathy installs.
+
+To try the last step in your own project, run:
+
+```bash
+claude --agent researcher "Explain this project. Cite files. Do not edit."
+```
+
+The [`--agent` flag](https://code.claude.com/docs/en/cli-reference#cli-flags) selects the installed agent for the session. See [Install](#install) for the full setup, [Native Windows](#native-windows) for PowerShell instructions, or [Codex](#codex) for that target.
+
+To rebuild the GIF, run `python3 -I scripts/render-demo.py` in an authoring environment with Pillow and a monospace font. Pillow is not needed to install or use agentkit.
 
 ## Requirements
 
@@ -246,7 +296,25 @@ Do not use both modes at once. You would get two copies of the hook.
 
 ## Usage
 
-The workflow block in CLAUDE.md tells the main session how to work on tasks that change code or have several steps.
+The workflow block in CLAUDE.md or AGENTS.md tells the main session how to work on tasks that change code or have several steps.
+
+```mermaid
+flowchart TD
+    Task[Your task] --> Small{3 files or fewer, one area,<br/>no schema or auth change?}
+    Small -->|Yes| Direct[Main session does the task directly]
+    Small -->|No| Plan[Supervisor: PLAN<br/>Split work into parts and waves]
+    Plan --> Approval[You review the plan,<br/>skill choices, and any package installs]
+    Approval -->|Changes requested| Plan
+    Approval -->|Approved| Workers[Workers run in parallel waves<br/>Each file has one owner]
+    Workers --> Review[Supervisor: REVIEW<br/>Check the task and worker reports]
+    Review --> Fix{Fixes needed?}
+    Fix -->|No| Result[Main session reports the result,<br/>verdict, and open items]
+    Fix -->|Yes| Limit{Two fix rounds<br/>already completed?}
+    Limit -->|No| Owner[Responsible workers fix their parts]
+    Owner --> Review
+    Limit -->|Yes| Result
+    Direct --> Result
+```
 
 1. The supervisor agent runs in PLAN mode. It splits the task into parts and waves.
 2. The main session shows you the plan: the number of agents, the waves, and the work of each agent. You approve it or change it. If a part needs an install, you approve the packages.
