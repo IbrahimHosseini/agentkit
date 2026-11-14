@@ -517,7 +517,7 @@ class Lifecycle:
             return
         if stage == 'install' and 'hooks' not in self.args.skip and self.total_steps:
             self.step += 1
-            self.say(f'[{self.step}/{self.total_steps}] Claude: SubagentStop hook')
+            self.say(f'[{self.step}/{self.total_steps}] Claude: hooks')
         diagnostics = (
             'if gs_present "$CUR" >/dev/null; then echo "  ok    gstack"; else echo "  warn  gstack not installed"; fi; '
             'if [ "$CUR" = claude ]; then '

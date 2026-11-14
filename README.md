@@ -22,7 +22,8 @@ The agents follow one workflow. A supervisor plans the work. You approve the pla
 - **macOS, Linux, and native Windows support** through a shared Python lifecycle engine. Optional POSIX integrations are listed below.
 - **Managed installation and updates** with backups, dry runs, and preservation of user edits. Upstream changes to edited files are saved as `.agentkit-new` for review.
 - **Installation health checks** with `agentkit doctor`, plus an uninstall command that keeps edited files.
-- **Optional integrations on macOS and Linux:** gstack, the Karpathy plugin, and Claude Code hooks for agent issue logging and auto-update.
+- **Claude Code hooks on macOS and Linux:** the default user installation includes agent issue logging and auto-update. Install asks before adding hooks.
+- **Optional integrations on macOS and Linux:** gstack and the Karpathy plugin.
 
 ## Contents
 
@@ -227,6 +228,7 @@ The hooks, gstack, and Karpathy plugin rows below apply to POSIX systems only. N
 | Skills `agent-report`, `security-audit`, `write-swift` | `~/.claude/skills/` | `skills` |
 | Workflow block between `<!-- agentkit:start -->` and `<!-- agentkit:end -->` | `~/.claude/CLAUDE.md` | `claude-md` |
 | SubagentStop hook (agent log) | `~/.claude/settings.json` | `hooks` |
+| SessionStart hook (auto-update, enabled by default for user installations) | `~/.claude/settings.json` | `hooks` |
 | gstack (git clone, then its `./setup --host claude`) | `~/.claude/skills/gstack` | `gstack` |
 | karpathy-guidelines plugin | through `claude plugin install` | `karpathy` |
 | Codex agents (16 `.toml` files) | `~/.codex/agents/` | (always, target codex) |
@@ -376,13 +378,19 @@ If `git pull` fails (local commits or changes in `~/.agentkit`), fix the clone b
 
 ### Auto-update
 
-This section applies to Claude on macOS and Linux. Native Windows does not write or run this Bash hook.
+Auto-update is enabled by default for user-level Claude installations on macOS and Linux. Install shows the SessionStart hook and asks before adding it. `--yes` accepts the prompt. `--skip hooks` skips both Claude hooks, and `--dry-run` writes nothing.
+
+Project installations with `--project` do not add the auto-update hook by default. The hook updates user-level installations. Codex and native Windows do not install this hook.
 
 ```bash
 agentkit auto-update on
 agentkit auto-update off
 agentkit auto-update status
 ```
+
+In 0.3.1 and later, `off` removes the managed hook and saves your choice. Updates and repeated installations keep auto-update off until you enable it with `on`.
+
+Existing installations keep their current hook state during `agentkit update`. An older installation with no auto-update hook stays off. Run `agentkit auto-update on` to enable it. A repeated user-level `install` offers the hook unless you saved an `off` choice with 0.3.1 or later.
 
 `on` adds a SessionStart hook to `settings.json`. At session start, the hook checks if the last check is older than one day. If yes, it starts `agentkit update --quiet` in the background. The log is `~/.claude/agentkit/update.log`. When it grows over 256 KB, the hook keeps only the last 100 KB. The update is fast-forward only. The hook never blocks the session. If the last background update needs attention, the hook prints one line at the next session start.
 

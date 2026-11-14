@@ -435,13 +435,18 @@ t_auto_update_toggle() {
   install_user
   local s="$CLAUDE/settings.json"
   run "$AK" auto-update status
-  assert_eq "$OUT" "auto-update: off" "initial status"
+  assert_eq "$OUT" "auto-update: on" "default install status"
+  run "$AK" auto-update off
+  assert_rc 0 "initial opt-out"
+  assert_file "$CLAUDE/agentkit/auto-update-disabled"
   # No --yes and no terminal: nothing is added.
   run "$AK" auto-update on
   assert_contains "settings.json: skipped"
   assert_eq "$(n_src "$s" SessionStart agentkit-auto-update)" 0 "entries without consent"
+  assert_file "$CLAUDE/agentkit/auto-update-disabled"
   run "$AK" auto-update on --yes
   assert_rc 0 "auto-update on"
+  assert_nofile "$CLAUDE/agentkit/auto-update-disabled"
   assert_eq "$(n_src "$s" SessionStart agentkit-auto-update)" 1 "SessionStart entries"
   export AKH
   assert_jtrue "$s" "d['hooks']['SessionStart'][0]['hooks'][0]['command'] == '\"' + os.environ['AKH'] + '/hooks/update-check.sh\"'"
@@ -455,8 +460,81 @@ t_auto_update_toggle() {
   run "$AK" auto-update status
   assert_eq "$OUT" "auto-update: off" "status after off"
   assert_jtrue "$s" "'SessionStart' not in d['hooks'] and len(d['hooks']['SubagentStop']) == 1"
+  install_user
+  assert_rc 0 "reinstall after opt-out"
+  run "$AK" auto-update status
+  assert_eq "$OUT" "auto-update: off" "reinstall preserves opt-out"
+  run "$AK" update
+  assert_rc 0 "update after opt-out"
+  run "$AK" auto-update status
+  assert_eq "$OUT" "auto-update: off" "update preserves opt-out"
+  run "$AK" auto-update on --yes
+  assert_rc 0 "explicit re-enable"
+  install_user
+  run "$AK" auto-update status
+  assert_eq "$OUT" "auto-update: on" "reinstall after re-enable"
   run "$AK" auto-update bogus
   assert_rc_nz "auto-update with a bad subcommand"
+}
+
+t_auto_update_skip_and_legacy_update() {
+  setup_home
+  install_user --skip hooks
+  assert_rc 0 "install without hooks"
+  assert_nofile "$CLAUDE/settings.json"
+  assert_nofile "$CLAUDE/agentkit/auto-update-disabled"
+  run "$AK" update
+  assert_rc 0 "update with absent legacy hooks"
+  assert_nofile "$CLAUDE/settings.json"
+  install_user
+  assert_rc 0 "normal reinstall enables default"
+  assert_eq "$(n_src "$CLAUDE/settings.json" SessionStart agentkit-auto-update)" 1 "default hook after normal reinstall"
+}
+
+t_auto_update_dry_run_and_invalid_settings() {
+  setup_home
+  install_user
+  local before
+  before="$(snap "$CLAUDE")"
+  run "$AK" auto-update off --dry-run
+  assert_rc 0 "dry-run off"
+  assert_eq "$(snap "$CLAUDE")" "$before" "dry-run off changes nothing"
+  run "$AK" auto-update off
+  before="$(snap "$CLAUDE")"
+  run "$AK" auto-update on --dry-run --yes
+  assert_rc 0 "dry-run on"
+  assert_eq "$(snap "$CLAUDE")" "$before" "dry-run on preserves opt-out"
+  printf 'invalid json\n' > "$CLAUDE/settings.json"
+  before="$(snap "$CLAUDE")"
+  run "$AK" auto-update on --yes
+  assert_rc_nz "failed on"
+  assert_eq "$(snap "$CLAUDE")" "$before" "failed on preserves preference and settings"
+  run "$AK" auto-update off
+  assert_rc_nz "off with invalid settings"
+  assert_eq "$(snap "$CLAUDE")" "$before" "failed off changes nothing"
+}
+
+t_auto_update_linked_state() {
+  setup_home
+  install_user
+  local preference="$CLAUDE/agentkit/auto-update-disabled" before
+  printf 'foreign content\n' > "$T/foreign"
+  ln -s "$T/foreign" "$preference"
+  run "$AK" auto-update off
+  assert_rc_nz "off with linked preference"
+  run "$AK" auto-update on --yes
+  assert_rc_nz "on with linked preference"
+  assert_eq "$(cat "$T/foreign")" "foreign content" "linked preference target preserved"
+  [ -L "$preference" ] || fail "preference link removed"
+  rm "$preference"
+  mv "$CLAUDE/agentkit" "$T/foreign-state"
+  ln -s "$T/foreign-state" "$CLAUDE/agentkit"
+  before="$(snap "$T/foreign-state")"
+  run "$AK" auto-update off
+  assert_rc_nz "off with linked state directory"
+  run "$AK" auto-update on --yes
+  assert_rc_nz "on with linked state directory"
+  assert_eq "$(snap "$T/foreign-state")" "$before" "linked state directory preserved"
 }
 
 t_hook_silent_fast_and_runs_update() {
@@ -613,6 +691,7 @@ t_project_scope() {
   assert_grep "$proj/CLAUDE.md" "<!-- agentkit:start -->"
   assert_grep "$proj/CLAUDE.md" "# proj notes"
   assert_eq "$(n_src "$proj/.claude/settings.json" SubagentStop agentkit-agent-log)" 1 "project hook entries"
+  assert_eq "$(n_src "$proj/.claude/settings.json" SessionStart agentkit-auto-update)" 0 "project install has no user-scoped auto-update hook"
   assert_eq "$(snap "$HOME")" "$before" "project install touched HOME"
   run "$AK" uninstall --project "$proj" --yes
   assert_rc 0 "project uninstall"
@@ -1400,7 +1479,7 @@ t_output_markers_and_table() {
   assert_contains "agentkit $(tr -d '[:space:]' < "$AKH/VERSION"): installing into $CLAUDE"
   assert_contains "[1/3] Claude: agents and skills"
   assert_contains "[2/3] Claude: CLAUDE.md"
-  assert_contains "[3/3] Claude: SubagentStop hook"
+  assert_contains "[3/3] Claude: hooks"
   assert_contains "  + agents/backend.md"
   assert_contains "  + skills/write-swift/SKILL.md"
   assert_match '^  \+ Files: [0-9]+ added, 0 updated' "files line"
@@ -2412,6 +2491,9 @@ t_update_merge
 t_update_not_fast_forward
 t_update_not_a_clone
 t_auto_update_toggle
+t_auto_update_skip_and_legacy_update
+t_auto_update_dry_run_and_invalid_settings
+t_auto_update_linked_state
 t_hook_silent_fast_and_runs_update
 t_hook_throttle
 t_hook_rotates_log

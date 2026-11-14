@@ -1,8 +1,12 @@
-# Current work: prepare agentkit 0.3.0
+# Current work: prepare agentkit 0.3.1
 
-Release preparation date: 2026-11-11 (Asia/Tehran).
+Release preparation date: 2026-11-14 (Asia/Tehran).
 
-Branch: `codex/release-0.3.0`. Base commit: `aead374`. Native Windows and the shared Python lifecycle merged into `main` through PR #3. This branch prepares the version PR, release docs, and README icon. Version 0.3.0 is not published. The user must merge the version PR before tagging the merged commit and publishing the GitHub release. The original 0.2.0 handoff below is historical.
+Branch: `codex/default-auto-update-0.3.1`. Base commit: `96023b1`. Version [0.3.0](https://github.com/IbrahimHosseini/agentkit/releases/tag/v0.3.0) was published on 2026-11-11 after PR #4 merged. README improvements merged through PR #5 on 2026-11-14.
+
+This branch prepares default auto-update for user-level Claude installations on macOS and Linux. Install still asks before adding the hook. Project installations with `--project` do not add this hook by default because it updates user-level installations. Explicit `auto-update off` choices saved with 0.3.1 survive updates and repeated installations. Updates do not add absent hooks to older installations. Codex and native Windows behavior stays unchanged.
+
+Version 0.3.1 is not published. The user approved implementation and release preparation. The user must merge the version PR before tagging the merged commit and publishing the GitHub release. The original 0.2.0 handoff below is historical.
 
 ## Scope and layout
 
@@ -13,6 +17,18 @@ Branch: `codex/release-0.3.0`. Base commit: `aead374`. Native Windows and the sh
 - Existing manifests, backup folders, target overrides, and marker-managed configuration retain their layout. Do not change the real user configuration for testing.
 
 ## Current verification
+
+Local verification for 0.3.1:
+
+- `bash scripts/validate.sh` passed. Shellcheck was unavailable and skipped.
+- `python3 -I -m unittest discover -s tests -p "test_*.py"` passed: 48 tests, seven skipped.
+- `bash tests/run.sh` passed: 84 passed, zero failed, one known-bug XFAIL, 85 total. The macOS run used direct Xcode Git in `PATH` to avoid the system shim's temporary cache file.
+- Nine focused shell tests passed, including the project-install check.
+- CI for the new release PR is pending.
+
+The results below describe earlier work, not this release change.
+
+The [base-main CI run at `96023b1`](https://github.com/IbrahimHosseini/agentkit/actions/runs/43590866404) passed before this branch started.
 
 The [Linux CI run at `bc897d1`](https://github.com/IbrahimHosseini/agentkit/actions/runs/42948209369) passed macOS, Ubuntu, Fedora, Arch, openSUSE, and Alpine before the shared-core rewrite. The four distro suites each reported 81 passed, zero failed, and one known-bug XFAIL. The container setup uses `tar --no-same-owner` so root does not restore checkout ownership into the scratch Git upstream.
 

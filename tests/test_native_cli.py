@@ -119,6 +119,14 @@ class NativeLifecycleTests(unittest.TestCase):
         self.install('both')
         self.assertTrue((self.codex / 'agents/backend.toml').is_file())
         self.assertTrue((self.claude / 'agents/backend.md').is_file())
+        self.assertFalse((self.codex / 'settings.json').exists())
+        settings = self.claude / 'settings.json'
+        if os.name == 'nt':
+            self.assertFalse(settings.exists())
+        else:
+            hooks = json.loads(settings.read_text(encoding='utf-8'))['hooks']
+            self.assertEqual([entry['_agentkit_source'] for entry in hooks['SessionStart']],
+                             ['agentkit-auto-update'])
         for target in (self.codex, self.claude):
             data = json.loads((target / 'agentkit/manifest.json').read_text(encoding='utf-8'))
             self.assertTrue(data['files'])
