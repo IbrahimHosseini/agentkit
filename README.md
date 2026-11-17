@@ -20,6 +20,7 @@ The agents follow one workflow. A supervisor plans the work. You approve the pla
 - **A shared workflow** with supervisor planning, your approval, parallel workers, and review with up to two fix rounds.
 - **Three bundled skills:** `agent-report`, `security-audit`, and `write-swift`.
 - **macOS, Linux, and native Windows support** through a shared Python lifecycle engine. Optional POSIX integrations are listed below.
+- **Per-agent model and effort selection** during interactive installation or later with `agentkit models`. Choices survive updates.
 - **Managed installation and updates** with backups, dry runs, and preservation of user edits. Upstream changes to edited files are saved as `.agentkit-new` for review.
 - **Installation health checks** with `agentkit doctor`, plus an uninstall command that keeps edited files.
 - **Claude Code hooks on macOS and Linux:** the default user installation includes agent issue logging and auto-update. Install asks before adding hooks.
@@ -40,6 +41,7 @@ The agents follow one workflow. A supervisor plans the work. You approve the pla
   - [Agents](#agents)
 - [Updating](#updating)
 - [Agent log](#agent-log)
+- [Models and effort](#models-and-effort)
 - [Health checks: doctor](#doctor)
 - [Uninstall](#uninstall)
 - [Development checks](#development-checks)
@@ -178,7 +180,7 @@ python -I .\lib\agentkit.py install --target codex
 python -I .\lib\agentkit.py doctor --target codex
 ```
 
-Native Windows runs `install`, `update`, `doctor`, `uninstall`, `version`, and `help` through the same Python engine as macOS and Linux. Default target folders are `%USERPROFILE%\.claude` and `%USERPROFILE%\.codex`. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override them. Keep Windows and WSL configurations separate.
+Native Windows runs `install`, `update`, `models`, `doctor`, `uninstall`, `version`, and `help` through the same Python engine as macOS and Linux. Default target folders are `%USERPROFILE%\.claude` and `%USERPROFILE%\.codex`. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override them. Keep Windows and WSL configurations separate.
 
 The first native version does not install gstack, the Karpathy plugin, Bash hooks, or auto-update hooks. It prints this limit. `auto-update`, `log`, and `feedback` remain POSIX commands. Codex agents can still include the bundled Karpathy instruction text. A `.cmd` or `.bat` target command cannot use shell metacharacters in its executable path or arguments: `& | < > ^ % !`, embedded double quotes, carriage returns, or newlines. This restriction does not apply to native `.exe` arguments. Use a native executable or a path without these characters.
 
@@ -215,7 +217,7 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 | Flag | Effect |
 |---|---|
 | `--dry-run` | Show what would change. Write nothing. |
-| `--yes`, `-y` | Accept ordinary install prompts. Remote scripts and desktop installation still need separate interactive confirmation. |
+| `--yes`, `-y` | Accept ordinary install prompts and keep existing/default model settings. Remote scripts and desktop installation still need separate interactive confirmation. |
 | `--target claude\|codex\|both` | Choose the CLI to install for. See below. |
 | `--project DIR` | Install into `DIR/.claude` and `DIR/CLAUDE.md`, not into `~/.claude`. Claude only. |
 | `--skip STEP` | Skip a step. STEP is `gstack`, `karpathy`, `claude-md`, `hooks` or `skills`. Repeat the flag to skip more. |
@@ -227,12 +229,41 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 `--target` sets which CLI gets the install.
 
 - Without `--target`, `install` selects Claude, Codex, or both from the desktop apps and CLIs it finds. Each selected target requires its CLI.
-- `update`, `uninstall` and `doctor` use every target that is already installed.
+- `update`, `models`, `uninstall` and `doctor` use every target that is already installed.
 - With `--target claude`, files go to `~/.claude` (or `CLAUDE_CONFIG_DIR`).
 - With `--target codex`, files go to `~/.codex` (or `CODEX_HOME`).
 - `--target both` does both.
 - `--project` works only for Claude. `--project` with `--target codex` or `both` is an error.
 - `auto-update` is for Claude on POSIX only.
+
+### Models and effort
+
+After required prerequisites are ready, interactive installation displays each agent's model and effort and asks:
+
+```text
+Do you want to change these models or effort levels? [y/N]
+```
+
+Enter or `n` keeps the displayed settings. With `y`, select a numbered model for each agent, then a supported effort level. Enter keeps the current value when it is compatible; a different model may require a new default effort. `m` accepts a model ID manually, and `r` restores the agentkit default. Unknown manual models inherit effort from the target CLI. Review the final table and confirm before any model choices are saved. Declining or ending input discards the selections; Ctrl-C stops the command. Prerequisites already installed remain installed.
+
+Change choices later, without reinstalling skills, hooks or workflow instructions:
+
+```bash
+agentkit models
+agentkit models --target codex --agent backend
+agentkit models --target claude
+agentkit models --target both
+agentkit models --project /path/to/project
+agentkit models --dry-run
+```
+
+`--agent` limits the picker to one agent. `--project` is Claude-only. Without a terminal, or with `--yes`, settings are displayed and kept; no catalog request or selection prompt runs. `--dry-run` previews selections without saving. `--quiet` still displays the interactive choices and confirmation. Start a new Claude Code or Codex session after changing agent files.
+
+Codex queries its current provider through the official app-server `model/list` interface, with a ten-second discovery deadline and no inference request. If discovery fails, it uses a bundled fallback derived from the project's defaults. Only the known effort from that mapping is offered offline. Claude uses the known `opus`, `sonnet` and `haiku` aliases; use `/model` inside Claude Code to check account availability. Both pickers support manually entered IDs. A listed model is **not a guarantee of access**: login, an eligible subscription or API credits may be required, depending on the provider. This command does not switch providers, sign in or purchase access.
+
+Choices are saved per target in `agentkit/model-overrides.json` (under `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or the project's `.claude` directory). That file stores model IDs and effort, never credentials. Updates apply saved choices over the latest agent instructions. Restore-default removes an agent's override so future upstream defaults apply again. Ordinary uninstall retains these preferences with other state; `uninstall --purge` removes them.
+
+The picker skips unmanaged, manually edited, missing installed, or linked agent files, even with an install's `--force`; it does not save an unapplied choice. The normal installer retains its existing `--force` behavior. Selected files, preferences and manifest hashes are validated and backed up before saving. A failed save attempts to restore the entire selection, including changes across both targets, and reports backup paths if recovery fails.
 
 ### What install changes
 

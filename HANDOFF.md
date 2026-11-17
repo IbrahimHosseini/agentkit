@@ -1,4 +1,37 @@
-# Current work: installation prerequisites and reporting
+# Current work: prepare agentkit 0.4.0
+
+Work date: 2026-11-17 (Asia/Tehran). Installer work was committed independently during this task as `001e3f0`; those changes are preserved. The user has authorized committing, release preparation and pushing. Follow CONTRIBUTING.md: open the version PR, wait for the user to merge, then tag the merged main commit and publish the GitHub release.
+
+The approved implementation adds `agentkit models`, `--agent`, a post-prerequisite installation picker, per-target versioned preferences, and update-time rendering of saved model/effort choices. No supervisor or workers were used. The model picker changes only managed agent files and its own preferences/manifest, with backups and rollback on save errors. Existing manual edits and linked agents are skipped. Provider/account management is out of scope.
+
+Codex model discovery uses bounded app-server `model/list`, not inference. Claude and offline Codex use explicitly unverified fallback catalogs. Unknown manual model IDs inherit effort from the CLI. Catalog test processes are fake Python CLIs; no real model service or user configuration is modified.
+
+## Release status
+
+Version `0.4.0` is prepared in `VERSION`, plugin metadata and the changelog. The release includes the installer improvements from `001e3f0` and per-agent model selection. Release branch: `codex/release-0.4.0`. The branch will include current `origin/main` (`0951981`) before push. Publication remains pending the user's merge of the version PR and verification of merged-main CI; no release tag has been created.
+
+## Verification
+
+- The focused model suite passes all 32 tests, including rollback across both targets, CLI entrypoint behavior, process timeout/cleanup and update persistence. The resource-warning check also passed.
+- `bash scripts/validate.sh` passed; shellcheck is unavailable and was skipped.
+- `python3 -I -m unittest discover -s tests -p "test_*.py"` passed: 109 tests, seven skipped (54.041 seconds).
+- `bash tests/run.sh` passed in one uninterrupted final run: 84 passed, zero failed, one known trailing-newline XFAIL (85 total). The run used direct Xcode Git in PATH to avoid the macOS system shim cache restriction. The sole failure in the earlier run was the converter's effort error contract; it was fixed in code, with the original test preserved.
+- `git diff --check` passed before release preparation.
+- The optional gstack `verify` aggregator could not fingerprint the tree because the sandbox refused its temporary Git writes (`WTREE_UNAVAILABLE`). The repository's three required checks are run directly instead. Skill state/logging used a temporary home.
+- Native PowerShell is unavailable here. Native Windows, WSL2 and real authenticated target-agent execution still require separate verification.
+
+## Implementation notes
+
+- Preferences live in each target's `agentkit/model-overrides.json`, separate from upstream sources and preserved by update.
+- Keep `effort: null` as inheritance when Enter keeps the same model. Do not silently turn an inherited setting into an explicit effort.
+- Codex `config.toml` may legitimately be a symlink: the picker reads its registration conflicts but never edits it. Agent files and preference/state paths must not be linked.
+- Tests must use scratch homes and fake catalog processes. Keep the known trailing-newline XFAIL.
+- Keep live catalog effort validation separate from the existing source converter's effort schema/error contract.
+- On this sandbox, signaling an already-exited process group can return EPERM rather than ESRCH. Model discovery still needs to reap the launcher and close its pipes; the reader owns closing stdout to avoid a cross-thread close/read lock hang.
+
+---
+
+# Previous work: installation prerequisites and reporting
 
 Work date: 2026-11-17 (Asia/Tehran). Base commit: `d5091a0403199590327c699c6e90ae4dd2c4b480`.
 

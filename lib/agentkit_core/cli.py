@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List
 
 import codex
-from . import desktop, integrations, platforms
+from . import desktop, integrations, models, platforms
 from .managed import atomic_write, digest, linked_parent, load_manifest, remove_guarded_tree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,10 +22,11 @@ END = '<!-- agentkit:end -->'
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog='agentkit', description='Commands: install update doctor uninstall version help; POSIX only: auto-update log feedback')
+    p = argparse.ArgumentParser(prog='agentkit', description='Commands: install update models doctor uninstall version help; POSIX only: auto-update log feedback')
     p.add_argument('command', nargs='?', default='help')
     p.add_argument('--target', choices=['claude', 'codex', 'both'])
     p.add_argument('--project', type=Path)
+    p.add_argument('--agent', help='Configure one agent (models command only)')
     for flag in ['dry-run', 'force', 'quiet', 'purge']:
         p.add_argument('--' + flag, action='store_true')
     p.add_argument('--yes', '-y', action='store_true')
@@ -36,6 +37,10 @@ def parser() -> argparse.ArgumentParser:
 class Lifecycle:
     def __init__(self, args: argparse.Namespace):
         self.args = args
+        if args.agent and args.command != 'models':
+            raise ValueError('--agent is supported only by agentkit models')
+        if args.command == 'models' and (args.force or args.purge or args.skip):
+            raise ValueError('models does not support --force, --purge or --skip')
         self.root = Path(os.environ.get('AGENTKIT_HOME', ROOT)).resolve()
         self.home = platforms.user_home()
         self.homes = {'claude': Path(os.environ.get('CLAUDE_CONFIG_DIR', self.home / '.claude')),
@@ -241,6 +246,7 @@ class Lifecycle:
             if linked_parent(directory, self.target):
                 raise ValueError('refusing linked parent directory: ' + str(directory))
         files = {}
+        preferences = models.load_preferences(self.target)
         eligible = temporary / 'sources'
         rendered = temporary / 'rendered'
         eligible.mkdir()
@@ -260,6 +266,10 @@ class Lifecycle:
                     self.warn('Codex agent(s) ' + src.stem + ' not installed: ' + str(dest) + ' exists and is not managed by agentkit. Use --force to back it up and replace it.')
                     continue
                 shutil.copy2(src, eligible / src.name)
+            if src.stem in preferences:
+                patched = rendered / (src.stem + ('.toml' if self.current == 'codex' else '.md'))
+                patched.write_bytes(models.patch_agent(out.read_bytes(), self.current, preferences[src.stem]))
+                out = patched
             files[rel] = out
         if 'skills' not in self.args.skip:
             for folder in sorted((self.root / 'skills').iterdir()):
@@ -622,14 +632,16 @@ class Lifecycle:
         if cmd == 'version':
             print(self.version)
         elif cmd == 'help':
-            self.say('agentkit install | update | doctor | uninstall | version | help')
+            self.say('agentkit install | update | models | doctor | uninstall | version | help')
             parser().print_help()
         elif cmd == 'install':
             self.say('agentkit ' + self.version)
             if sys.stdout.isatty() and 'NO_COLOR' not in os.environ and not self.args.quiet:
                 print('\033[36m( o.o )\033[0m')
             self.requirements()
+            model_batch = models.configure(self, installing=True)
             self.desktop_installations()
+            models.commit(self, model_batch)
             if self.args.dry_run:
                 self.say('(dry run: nothing is written)')
             self.total_steps = sum(1 + int('claude-md' not in self.args.skip) + int(target == 'codex' or 'hooks' not in self.args.skip) for target in self.targets())
@@ -679,12 +691,14 @@ class Lifecycle:
                 self.sync('update')
                 if target == 'claude':
                     self.posix_integration('update')
+        elif cmd == 'models':
+            models.commit(self, models.configure(self))
         elif cmd == 'doctor':
             return self.doctor()
         elif cmd == 'uninstall':
             self.uninstall()
         else:
-            raise ValueError(cmd + ' is unsupported on native Windows; use install/update/doctor/uninstall or WSL for POSIX integrations')
+            raise ValueError(cmd + ' is unsupported on native Windows; use install/update/models/doctor/uninstall or WSL for POSIX integrations')
         if platforms.is_windows() and cmd in ('install', 'update'):
             self.say('Native Windows: gstack, karpathy plugin, Bash hooks and auto-update integrations are not installed.')
         return 0
