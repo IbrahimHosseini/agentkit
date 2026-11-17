@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import codex
-from . import platforms
+from . import desktop, platforms
 from .managed import atomic_write, digest, linked_parent, load_manifest
 
 PREFERENCES = 'agentkit/model-overrides.json'
@@ -403,7 +403,8 @@ def configure(lifecycle, installing=False, read=None):
     """Collect the entire selection before any mutation. Return a commit batch."""
     read = read or input
     rows, states = gather(lifecycle, installing)
-    interactive = sys.stdin.isatty() and not lifecycle.args.yes
+    interactive = (not lifecycle.args.yes and sys.stdin.isatty()
+                   and (not platforms.is_windows() or desktop.windows_console_input(sys.stdin)))
     # In quiet interactive mode the user must still see what the questions mean.
     say = print if interactive else lifecycle.say
     show_table(rows, say)

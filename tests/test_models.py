@@ -62,7 +62,9 @@ class ModelTests(unittest.TestCase):
         return life, dest
 
     def batch(self, life, answers, installing=False):
-        with mock.patch('sys.stdin.isatty', return_value=True), mock.patch.object(models, 'catalog',
+        with mock.patch('sys.stdin.isatty', return_value=True), \
+             mock.patch.object(models.desktop, 'windows_console_input', return_value=True), \
+             mock.patch.object(models, 'catalog',
                 side_effect=lambda root, target, say: models.fallback_catalog(root, target)):
             return models.configure(life, installing, read=mock.Mock(side_effect=answers))
 
@@ -159,6 +161,18 @@ class ModelTests(unittest.TestCase):
                 read = mock.Mock(side_effect=AssertionError('unexpected prompt'))
                 self.assertIsNone(models.configure(self.lifecycle(*args), args[0] == 'install', read))
                 discover.assert_not_called()
+        self.assertEqual(tree(self.home), before)
+
+    def test_windows_nul_input_does_not_prompt_for_models(self):
+        life, _ = self.seed()
+        before = tree(self.home)
+        with mock.patch('sys.stdin.isatty', return_value=True), \
+             mock.patch.object(models.platforms, 'is_windows', return_value=True), \
+             mock.patch.object(models.desktop, 'windows_console_input', return_value=False), \
+             mock.patch.object(models, 'catalog') as discover:
+            read = mock.Mock(side_effect=AssertionError('unexpected prompt'))
+            self.assertIsNone(models.configure(life, read=read))
+            discover.assert_not_called()
         self.assertEqual(tree(self.home), before)
 
     def test_dry_run_does_not_save(self):

@@ -144,15 +144,28 @@ def linux_package(name: str) -> bool:
         return False
 
 
+def windows_console_input(stream):
+    """NUL is a character device: Windows isatty alone does not imply a console."""
+    try:
+        import ctypes
+        import msvcrt
+        mode = ctypes.c_ulong()
+        get_mode = ctypes.WinDLL('kernel32', use_last_error=True).GetConsoleMode
+        get_mode.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        get_mode.restype = ctypes.c_int
+        return bool(get_mode(msvcrt.get_osfhandle(stream.fileno()), ctypes.byref(mode)))
+    except (ImportError, AttributeError, OSError, ValueError):
+        return False
+
+
 @contextlib.contextmanager
 def terminal():
+    if platforms.is_windows():
+        # Do not reopen CONIN$ for redirected input, or treat NUL as a console.
+        yield sys.stdin if sys.stdin.isatty() and windows_console_input(sys.stdin) else None
+        return
     if sys.stdin.isatty():
         yield sys.stdin
-        return
-    # On Windows a redirected stdin can still have a readable CONIN$ handle
-    # with no human to answer it (including CI). Do not reopen that console.
-    if platforms.is_windows():
-        yield None
         return
     try:
         stream = open('/dev/tty', 'r')

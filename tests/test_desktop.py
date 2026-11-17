@@ -129,10 +129,25 @@ class DesktopTests(unittest.TestCase):
     def test_windows_interactive_input_keeps_console(self):
         with mock.patch.object(platforms, 'is_windows', return_value=True), \
              mock.patch('sys.stdin.isatty', return_value=True), \
+             mock.patch.object(desktop, 'windows_console_input', return_value=True), \
              mock.patch('builtins.open') as opened:
             with desktop.terminal() as stream:
                 self.assertIs(stream, sys.stdin)
             opened.assert_not_called()
+
+    def test_windows_character_device_without_console_is_noninteractive(self):
+        with mock.patch.object(platforms, 'is_windows', return_value=True), \
+             mock.patch('sys.stdin.isatty', return_value=True), \
+             mock.patch.object(desktop, 'windows_console_input', return_value=False), \
+             mock.patch('builtins.open') as opened:
+            with desktop.terminal() as stream:
+                self.assertIsNone(stream)
+            opened.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'nt', 'requires Windows console handles')
+    def test_windows_nul_handle_is_not_a_console(self):
+        with open(os.devnull) as stream:
+            self.assertFalse(desktop.windows_console_input(stream))
 
     def test_dry_run_never_downloads_or_prompts(self):
         lifecycle = self.lifecycle(['--target', 'claude', '--dry-run'])
