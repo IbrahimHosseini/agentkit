@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex agent dispatch uses installed role settings instead of silently inheriting the parent model. Model changes require a new agent.
+- Quiet updates rejected on a non-main branch create the failure notification shown at the next session start.
+
 ## [0.4.0] - 2026-11-17
 
 ### Added
