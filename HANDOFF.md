@@ -1,4 +1,34 @@
-# Current work: prepare agentkit 0.3.1
+# Current work: installation prerequisites and reporting
+
+Work date: 2026-11-17 (Asia/Tehran). Base commit: `d5091a0403199590327c699c6e90ae4dd2c4b480`.
+
+The user approved implementation of desktop detection, optional desktop installation, progress reporting, required Bun for gstack, and clearer installation instructions. The final prerequisite policy requires the CLI for every selected target. A detected desktop app does not replace its CLI.
+
+Implementation is complete. Supervisor review returned **APPROVED**, with no unresolved FIX items. Do not treat the historical verification results below as results for this change. Tests use temporary homes and fake installers. No real desktop app, CLI, Bun, or gstack installation was performed on this machine. Do not commit or push.
+
+## Installation behavior
+
+- Detect desktop apps separately from their CLIs. Select automatic targets from either installed form, then require each selected CLI.
+- Recognize Claude, older Codex, and the new ChatGPT app that contains Codex. Exclude ChatGPT Classic from Codex detection.
+- Ask separately before optional desktop installation. `--yes` alone does not authorize it. Check the installed app after an automatic or manual installer completes.
+- Show progress or a waiting indicator for downloads, dependency installation, Git operations, plugin operations, and setup.
+- Require and check Bun for accepted gstack installation. Do not require Bun when gstack is declined, skipped, or unavailable on native Windows.
+- Report failures with the stage, known cause, output or log path, and a next action. Preserve nonzero status for failed required steps and accepted installations.
+
+## Verification for this change
+
+- `bash scripts/validate.sh` passed, including shell syntax and embedded requirements-block identity checks. Shellcheck was unavailable and skipped.
+- `python3 -I -m unittest discover -s tests -p "test_*.py"` passed: 77 tests, seven skipped (53.687 seconds).
+- The focused installation-feedback suite passed all 11 tests.
+- Shell coverage totals 84 passing cases and one known trailing-newline XFAIL across runs. The earlier full run had 82 passes, one stale assertion failure, one XFAIL, and a final terminal-fixture hang. After fixture and assertion corrections, all three affected cases passed in a focused rerun. No single uninterrupted final full-suite pass is claimed. Tests used direct Xcode Git in `PATH` to avoid the system Git shim cache restriction.
+- Read-only discovery on this Mac found the installed Claude app and the ChatGPT app that contains Codex.
+- `git diff --check` and `bash bin/agentkit help` passed.
+
+Supervisor independently checked the corrected shell cases and approved the result. Native PowerShell was unavailable. Native Windows and WSL2 verification remain pending. Real app, CLI, Bun, and gstack installation were not tested. The three required POSIX checks and native Windows checks remain listed under **Current checks** below. Keep the known trailing-newline XFAIL.
+
+---
+
+# Previous work: prepare agentkit 0.3.1
 
 Release preparation date: 2026-11-14 (Asia/Tehran).
 

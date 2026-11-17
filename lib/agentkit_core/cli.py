@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List
 
 import codex
-from . import integrations, platforms
+from . import desktop, integrations, platforms
 from .managed import atomic_write, digest, linked_parent, load_manifest, remove_guarded_tree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +58,8 @@ class Lifecycle:
         self.rows = []
         self.step = 0
         self.total_steps = 0
+        self.apps = desktop.discover() if args.command in ('install', 'doctor') else {}
+        self.install_targets = None
 
     def say(self, text: str) -> None:
         if not self.args.quiet:
@@ -81,7 +83,9 @@ class Lifecycle:
         if self.args.target:
             return ['claude', 'codex'] if self.args.target == 'both' else [self.args.target]
         if self.args.command == 'install':
-            found = [t for t in self.homes if platforms.find_command(t)]
+            if self.install_targets is not None:
+                return self.install_targets
+            found = [t for t in self.homes if platforms.find_command(t) or t in self.apps]
         else:
             found = [t for t, home in self.homes.items() if (home / 'agentkit/manifest.json').exists()]
         return found or ['claude']
@@ -118,20 +122,79 @@ class Lifecycle:
         return output.getvalue().strip()
 
     def requirements(self) -> None:
+        self.install_targets = self.targets()
+        self.say('Application detection:')
+        for target in self.homes:
+            app = self.apps.get(target)
+            self.say('  ' + target + ' desktop: ' + (f'installed ({app.name}: {app.path})' if app else desktop.support(target) or 'not found'))
+            self.say('  ' + target + ' CLI: ' + (platforms.find_command(target) or 'not found'))
+        wanted = 'both' if len(self.install_targets) == 2 else self.install_targets[0]
+        if not self.args.target and not self.args.project and not self.apps and len(self.install_targets) == 1:
+            wanted = 'auto'
         if not platforms.is_windows():
-            script = '. "$1"; YES="$2" DRY="$3" REQ_WANT="$4" check_requirements install'
-            if os.environ.get('AGENTKIT_REQS_OK') == '1':
-                return
+            # The bootstrap only handles Git/Python. Never trust an environment
+            # flag to bypass readiness of a target selected from a desktop app.
+            script = '. "$1"; YES="$2" DRY="$3" QUIET="$5" REQ_WANT="$4" check_requirements install'
             proc = platforms.run(['bash', '-c', script, '_', str(self.root / 'lib/requirements.sh'),
-                                  str(int(self.args.yes)), str(int(self.args.dry_run)), self.args.target or 'auto'], stdout=subprocess.DEVNULL if self.args.quiet else None)
+                                  str(int(self.args.yes)), str(int(self.args.dry_run)), wanted, str(int(self.args.quiet))])
             if proc.returncode:
-                raise ValueError('requirements are not met')
-            return
-        if sys.version_info < (3, 9):
-            raise ValueError('Python >= 3.9 is required')
-        missing = [name for name in ['git'] + self.targets() if not platforms.find_command(name)]
-        if missing:
-            raise ValueError('requirements are not met: install ' + ', '.join(missing) + ' and add them to PATH')
+                raise ValueError(f'requirements are not met: CLI prerequisites failed (exit {proc.returncode}); review the missing tools and commands above, then rerun agentkit install')
+            for folder in (self.home / '.local/bin', self.home / '.bun/bin'):
+                if folder.is_dir():
+                    os.environ['PATH'] = str(folder) + os.pathsep + os.environ.get('PATH', '')
+        else:
+            if sys.version_info < (3, 9):
+                raise ValueError('Python >= 3.9 is required')
+            if not platforms.find_command('git'):
+                raise ValueError('Git is required; install Git for Windows from https://git-scm.com/download/win and reopen your terminal')
+            for target in self.install_targets:
+                if platforms.find_command(target):
+                    continue
+                url = 'https://code.claude.com/docs/en/setup' if target == 'claude' else 'https://developers.openai.com/codex/cli/'
+                self.say(target + ' CLI is required. Official installation instructions: ' + url)
+                if self.args.dry_run or not sys.stdin.isatty():
+                    raise ValueError(target + ' CLI not found. Install it using ' + url + ', add it to PATH, then retry')
+                if not self.ask('Install the required ' + target + ' CLI using the official instructions, then recheck?'):
+                    raise ValueError(target + ' CLI installation declined; installation is incomplete. See ' + url)
+                input('Waiting: finish the CLI installation, then press Enter to recheck: ')
+        if wanted == 'auto':
+            self.install_targets = [t for t in self.homes if platforms.find_command(t)] or self.install_targets
+        for target in self.install_targets:
+            error = platforms.command_error(target)
+            if error:
+                raise ValueError(target + ' CLI is required: ' + error + '. Check its installation/PATH, then retry.')
+
+    def desktop_installations(self) -> None:
+        for target in self.targets():
+            if target in self.apps:
+                self.rows.append((target, 'desktop', 'already installed'))
+                continue
+            reason = desktop.support(target)
+            if reason:
+                self.say(target + ' desktop: ' + reason + '; see ' + desktop.PAGES[target])
+                self.rows.append((target, 'desktop', 'unsupported'))
+                continue
+            if self.args.dry_run:
+                self.say('[dry-run] Would offer optional ' + target + ' desktop installation with separate confirmation')
+                continue
+            # Explicit desktop consent is independent of --yes. Piped bootstrap
+            # execution still has an interactive stdin once exec reaches here.
+            with desktop.terminal() as stream:
+                interactive = stream is not None
+            if not interactive:
+                self.say(target + ' desktop: skipped (separate interactive confirmation required); ' + desktop.PAGES[target])
+                self.rows.append((target, 'desktop', 'skipped'))
+                continue
+            if desktop.answer('Install optional ' + target + ' desktop from ' + desktop.PAGES[target] + '? [y/N] ').lower() not in ('y', 'yes'):
+                self.rows.append((target, 'desktop', 'skipped'))
+                continue
+            try:
+                desktop.install(target, self.say, self.args.quiet)
+            except ValueError:
+                self.rows.append((target, 'desktop', 'failed'))
+                raise
+            self.apps = desktop.discover()
+            self.rows.append((target, 'desktop', 'installed'))
 
     def instruction_path(self) -> Path:
         if self.current == 'codex':
@@ -532,7 +595,7 @@ class Lifecycle:
             'install': 'step_hooks',
             'update': 'refresh_hooks',
             'uninstall': 'hook_remove agentkit-',
-            'extras': 'TARGETS="$4"; step_gstack; if has_target claude; then step_karpathy; fi; ui_summary_print',
+            'extras': 'TARGETS="$4"; rc=0; step_gstack || rc=$?; if [ "$rc" = 0 ] && has_target claude; then step_karpathy || rc=$?; fi; ui_summary_print; exit "$rc"',
         }
         opts = ['--target', self.current]
         for skip in self.args.skip:
@@ -552,7 +615,7 @@ class Lifecycle:
             self.rows.append((self.current, 'SubagentStop hook', 'unchanged' if 'agentkit-agent-log' in existing else 'added'))
         result = platforms.run(['bash', '-c', script, '_', str(self.root / 'lib/legacy-cli.sh')] + opts, stdout=subprocess.DEVNULL if stage == 'doctor' and self.args.quiet else None)
         if result.returncode:
-            raise ValueError('POSIX integration failed')
+            raise ValueError(f'{stage} integration failed (exit {result.returncode}); review the failed stage and its output/log above, fix the reported issue, then rerun agentkit install')
 
     def execute(self) -> int:
         cmd = self.args.command
@@ -566,23 +629,27 @@ class Lifecycle:
             if sys.stdout.isatty() and 'NO_COLOR' not in os.environ and not self.args.quiet:
                 print('\033[36m( o.o )\033[0m')
             self.requirements()
+            self.desktop_installations()
             if self.args.dry_run:
                 self.say('(dry run: nothing is written)')
             self.total_steps = sum(1 + int('claude-md' not in self.args.skip) + int(target == 'codex' or 'hooks' not in self.args.skip) for target in self.targets())
             for target in self.targets():
                 self.current = target
-                if self.args.target and not platforms.find_command(target):
-                    self.warn(target + ' CLI not found; installing for --target ' + self.args.target + ' anyway')
                 self.step += 1
                 self.say(f'[{self.step}/{self.total_steps}] ' + ('Claude' if target == 'claude' else 'Codex') + ': agents and skills')
                 self.sync('install')
                 if target == 'claude':
                     self.posix_integration('install')
-            self.posix_integration('extras')
+            try:
+                self.posix_integration('extras')
+            except ValueError:
+                self.say('Installation incomplete. Completed core files remain installed; review the failed integration above and rerun after fixing it.')
+                raise
             self.say('TARGET  ITEM  STATUS')
             for row in self.rows:
                 self.say('  '.join(row))
-            self.say('Done. Run agentkit doctor to check the setup.')
+            if os.environ.get('AGENTKIT_BOOTSTRAP_ACTIVE') != '1':
+                self.say('Done. Run agentkit doctor to check the setup.')
         elif cmd == 'update':
             if not (self.root / '.git').exists():
                 raise ValueError(str(self.root) + ' is not a git clone, cannot update')
@@ -636,7 +703,16 @@ def main(argv=None) -> int:
             value = argv[i + 1] if arg == '--target' and i + 1 < len(argv) else arg.split('=', 1)[1] if arg.startswith('--target=') else None
             if value is not None and value not in ('claude', 'codex', 'both'):
                 raise ValueError("--target: unknown value '" + value + "' (claude|codex|both)")
-        return Lifecycle(parser().parse_args(argv)).execute()
-    except (ValueError, OSError, codex.Fail, subprocess.CalledProcessError) as exc:
+        lifecycle = Lifecycle(parser().parse_args(argv))
+        return lifecycle.execute()
+    except KeyboardInterrupt:
+        print('error: installation interrupted by the user; completed steps may remain. Review the installation and rerun when ready.', file=sys.stderr)
+        return 130
+    except (ValueError, OSError, EOFError, codex.Fail, subprocess.SubprocessError) as exc:
         print('error: ' + str(exc), file=sys.stderr)
+        if 'lifecycle' in locals() and lifecycle.args.command == 'install':
+            print('Installation incomplete. Completed/skipped stages:', file=sys.stderr)
+            for row in lifecycle.rows:
+                print('  ' + '  '.join(row), file=sys.stderr)
+            print('  failed: ' + str(exc), file=sys.stderr)
         return 1

@@ -52,7 +52,7 @@ new_env() { # T
   T="$1"
   export HOME="$T/home" TMPDIR="$T/tmp" AGENT_LOG_DIR="$T/agent-log" PATH="$T/stubs:$REALBIN"
   export AGENTKIT_REPO="$T/origin.git" STUB_LOG="$T/stub.log"
-  export CODEX_HOME="$HOME/.codex" LC_ALL=C
+  export CODEX_HOME="$HOME/.codex" LC_ALL=C AGENTKIT_APPLICATION_DIRS="$HOME/Applications"
   unset CLAUDE_CONFIG_DIR AGENTKIT_HOME AGENTKIT_UPDATE_INTERVAL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE STUB_PLUGIN_LIST STUB_GH_FAIL_LABEL
   unset NO_COLOR LANG LC_CTYPE AGENTKIT_REQS_OK STUB_CURL_LOG
   mkdir -p "$HOME" "$TMPDIR" "$T/work" "$T/stubs"
@@ -131,6 +131,26 @@ upstream() {
     && (cd "$T/up" && sh -c "$1" && git add -A && git commit -q -m "upstream change" && git push -q origin HEAD:main) \
     || { echo "upstream change failed"; exit 99; }
 }
+mk_desktop() {
+  "$PY" -I - "$HOME/Applications" "$1" <<'PYDESKTOP'
+import plistlib
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+target = sys.argv[2]
+name = 'Claude' if target == 'claude' else 'Codex'
+identity = 'com.anthropic.claudefordesktop' if target == 'claude' else 'com.openai.codex'
+bundle = root / (name + '.app') / 'Contents'
+(bundle / 'MacOS').mkdir(parents=True, exist_ok=True)
+executable = bundle / 'MacOS' / name
+executable.write_text('#!/bin/sh\nexit 0\n')
+executable.chmod(0o755)
+(bundle / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': identity, 'CFBundleExecutable': name}))
+(root / 'applications').mkdir(exist_ok=True)
+(root / 'applications' / (identity + '.desktop')).write_text('[Desktop Entry]\nType=Application\nName=' + name + '\nExec="' + str(executable) + '"\n')
+PYDESKTOP
+}
+
 mk_claude() {
   cat > "$T/stubs/claude" <<'EOF'
 #!/bin/sh
@@ -245,7 +265,7 @@ t_dry_run_writes_nothing() {
   assert_nofile "$HOME/.local/bin/agentkit"
   assert_nofile "$CLAUDE/agents"
   assert_nofile "$CLAUDE/agentkit"
-  # Piped like `curl | bash`: no checkout and no clone yet. The temp clone must be cleaned up.
+  # Piped like `curl | bash`: no checkout; dry run must not download a clone.
   rm -rf "$AKH"
   before="$(snap "$HOME")"
   RUN_STDIN="$ROOT/install.sh" run bash -s -- --dry-run --skip gstack --skip karpathy
@@ -885,8 +905,10 @@ t_dependency_stubs() {
   assert_nogrep "$STUB_LOG" "marketplace add"
   # gstack: no bun on PATH, so nothing is cloned and nothing needs the network.
   run bash "$AKH/install.sh" --yes --skip karpathy
-  assert_rc 0 "install with gstack and no bun"
-  assert_contains "gstack: bun not found"
+  assert_rc_nz "accepted gstack requires bun"
+  assert_contains "gstack: required Bun installation failed or was declined"
+  assert_contains "Installation incomplete"
+  assert_not_contains "Done. Run agentkit doctor"
   assert_nofile "$CLAUDE/skills/gstack"
   # gstack: declined.
   run bash "$AKH/install.sh" --skip karpathy
@@ -934,7 +956,8 @@ t_bad_settings_untouched() {
   mkdir -p "$CLAUDE"
   printf '{not json' > "$CLAUDE/settings.json"
   install_user
-  assert_rc 0 "install with an invalid settings.json"
+  assert_rc_nz "invalid settings.json cannot produce complete install"
+  assert_not_contains "Done. Run agentkit doctor"
   assert_contains "cannot read"
   assert_eq "$(cat "$CLAUDE/settings.json")" "{not json" "invalid settings.json must stay as it was"
   assert_same "$AKH/agents/backend.md" "$CLAUDE/agents/backend.md"
@@ -1349,18 +1372,19 @@ t_requirements_ok_skips_check_not_detection() {
   setup_home
   rm -f "$T/stubs/claude"
   mk_codex
-  # AGENTKIT_REQS_OK=1 skips the check and its output, but the CLIs found still pick the targets.
+  # AGENTKIT_REQS_OK is not trusted to bypass required CLI checks.
   AGENTKIT_REQS_OK=1 run "$AK" install --yes --skip gstack --skip karpathy
   assert_rc 0 "install with the check skipped"
-  assert_not_contains "Requirements:"
+  assert_contains "Requirements:"
   assert_file "$CODEX/agents/backend.toml"
   assert_nofile "$CLAUDE"
   # With no agent CLI at all, the default is claude (assumption: documented fallback in select_targets).
   rm -f "$T/stubs/codex"
   rm -rf "$CODEX"
   AGENTKIT_REQS_OK=1 run "$AK" install --yes --skip gstack --skip karpathy
-  assert_rc 0 "install with the check skipped and no CLI"
-  assert_file "$CLAUDE/agents/backend.md"
+  assert_rc_nz "install with no CLI cannot bypass requirements"
+  assert_contains "requirements are not met"
+  assert_nofile "$CLAUDE/agents/backend.md"
   assert_nofile "$CODEX"
 }
 
@@ -1409,6 +1433,8 @@ t_output_plain_has_no_ansi() {
 
 t_output_terminal_color_and_no_color() {
   setup_home
+  # Consent has separate tests; seed a desktop for this output-only PTY case.
+  mk_desktop claude
   run_pty "$AK" install --yes --skip gstack --skip karpathy
   assert_rc 0 "install on a terminal"
   has_esc "$OUT" || fail "no color on a terminal"
@@ -1577,11 +1603,11 @@ t_target_explicit_without_cli() {
   assert_contains "requirements are not met"
   assert_eq "$(snap "$HOME")" "$before" "a failed install changed files"
   assert_nofile "$CODEX"
-  # With the check skipped (AGENTKIT_REQS_OK=1): warn, install anyway.
+  # Environment flags must not bypass a required CLI.
   AGENTKIT_REQS_OK=1 run "$AK" install --target codex --yes --skip gstack --skip karpathy
-  assert_rc 0 "install --target codex with the check skipped"
-  assert_contains "codex CLI not found; installing for --target codex anyway"
-  assert_file "$CODEX/agents/backend.toml"
+  assert_rc_nz "install --target codex cannot bypass required CLI"
+  assert_contains "requirements are not met"
+  assert_nofile "$CODEX"
   assert_nofile "$CLAUDE"
   # --target claude with codex present: codex is left alone.
   rm -rf "$CODEX"
@@ -1759,6 +1785,7 @@ EOF
   assert_contains "gstack: already installed ($CODEX/skills/gstack-*)"
   assert_nogrep "$STUB_LOG" "setup --host"
   # The same on a terminal (the spinner path).
+  mk_desktop codex
   rm -rf "$CODEX/skills/gstack-review"
   run_pty "$AK" install --target codex --yes --skip karpathy
   assert_rc 0 "install with gstack on a terminal"
@@ -2223,17 +2250,21 @@ t_requirements_target_both() {
   setup_home
   rm -f "$T/stubs/claude"
   mk_brew; mk_curl
-  # both needs both: codex comes from brew, claude is a remote script that --yes never runs.
+  # Both need valid CLIs. Stop before installing Codex if required Claude cannot be installed.
   run "$AK" install --target both --yes --skip gstack --skip karpathy
   assert_rc_nz "--target both without claude"
-  assert_contains "Running: brew install codex"
+  assert_not_contains "Running: brew install codex"
+  assert_nofile "$T/brew.log"
+  assert_nofile "$T/stubs/codex"
+  assert_contains "Installation incomplete"
+  assert_not_contains "Done. Run agentkit doctor"
   assert_contains "No TTY: not running a remote script"
   assert_nofile "$T/curl.log"
   assert_match '^  x claude +not found, required' "claude row"
   assert_nofile "$CLAUDE"
   assert_nofile "$CODEX/agents/backend.toml"
   assert_nofile "$CODEX/config.toml"
-  # Both present: installs both.
+  # Claude present: install the missing Codex CLI through brew, then install both targets.
   printf '#!/bin/sh\nexit 0\n' > "$T/stubs/claude"; chmod +x "$T/stubs/claude"
   run "$AK" install --target both --yes --skip gstack --skip karpathy
   assert_rc 0 "--target both with both CLIs"

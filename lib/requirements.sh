@@ -48,11 +48,15 @@ req_detect() {
 # Sets REQ_V_<tool> (version) and REQ_S_<tool> (ok | old | missing).
 # shellcheck disable=SC2154
 req_scan() {
-  local t v major minor
+  local t v major minor raw
   for t in git python3 claude codex gh bun; do
     v=""
     if command -v "$t" > /dev/null 2>&1; then
-      v="$("$t" --version 2> /dev/null | head -n 1 | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1)"
+      if ! raw="$("$t" --version 2>&1)"; then
+        eval "REQ_S_$t=broken; REQ_V_$t=\$raw"
+        continue
+      fi
+      v="$(printf '%s\n' "$raw" | head -n 1 | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1)"
       [ -n "$v" ] || v="unknown"
       eval "REQ_S_$t=ok"
       if [ "$t" = python3 ]; then
@@ -88,7 +92,7 @@ req_wants() {
 }
 # REQ_S_<tool> is assigned through eval in req_scan, so shellcheck cannot see it.
 # shellcheck disable=SC2154
-req_met() { [ "$REQ_S_git" = ok ] && [ "$REQ_S_python3" = ok ] && req_agent_ok; }
+req_met() { [ "$REQ_S_git" = ok ] && [ "$REQ_S_python3" = ok ] && { [ "${REQ_BOOTSTRAP:-0}" = 1 ] || req_agent_ok; }; }
 
 req_row() {
   local mark="$1" color="$2" name="$3" note="$4"
@@ -99,8 +103,10 @@ req_list() {
   local t s v note
   echo "Requirements:"
   for t in git python3 claude codex gh bun; do
+    if [ "${REQ_BOOTSTRAP:-0}" = 1 ]; then case "$t" in git | python3) ;; *) continue ;; esac; fi
     eval "s=\$REQ_S_$t; v=\$REQ_V_$t"
     case "$t:$s" in
+      *:broken) req_row "$REQ_BADM" "$REQ_R" "$t" "--version failed: $v; reinstall or fix this command" ;;
       python3:old) req_row "$REQ_BADM" "$REQ_R" "$t" "found $v, need 3.9 or newer" ;;
       *:ok) req_row "$REQ_OKM" "$REQ_G" "$t" "$v" ;;
       *)
@@ -112,6 +118,7 @@ req_list() {
               if req_agent_ok; then note="optional (the other agent is installed)"
               else note="one of claude or codex is required"; fi
             else note="required"; fi ;;
+          bun) note="required when gstack installation is accepted" ;;
           *) note="optional" ;;
         esac
         req_row "$REQ_BADM" "$REQ_R" "$t" "not found, $note"
@@ -178,12 +185,13 @@ req_suggest_one() {
 req_suggest() {
   local t s any=0
   for t in git python3 gh bun; do
+    if [ "${REQ_BOOTSTRAP:-0}" = 1 ]; then case "$t" in git | python3) ;; *) continue ;; esac; fi
     eval "s=\$REQ_S_$t"
     [ "$s" = ok ] && continue
     [ "$any" = 0 ] && { echo "How to install what is missing:"; any=1; }
     req_suggest_one "$t"
   done
-  if ! req_agent_ok; then
+  if [ "${REQ_BOOTSTRAP:-0}" != 1 ] && ! req_agent_ok; then
     [ "$any" = 0 ] && echo "How to install what is missing:"
     for t in claude codex; do
       eval "s=\$REQ_S_$t"
@@ -192,38 +200,81 @@ req_suggest() {
   fi
 }
 
+# Keep child diagnostics and prompts visible; only the waiting helper is backgrounded.
+req_run() {
+  local label="$1" command="$2" waiter rc saved_int saved_term log=""
+  saved_int="$(trap -p INT)"; saved_term="$(trap -p TERM)"
+  [ "${QUIET:-0}" = 1 ] || printf '%s ...\n' "$label"
+  (
+    tick=""
+    trap '[ -z "$tick" ] || kill "$tick" 2>/dev/null; exit 0' INT TERM
+    while :; do
+      sleep 5 & tick=$!
+      wait "$tick" || exit 0
+      [ "${QUIET:-0}" = 1 ] || printf '  Waiting: %s\n' "$label"
+    done
+  ) &
+  waiter=$!
+  trap 'kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null; exit 130' INT
+  trap 'kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null; exit 143' TERM
+  if [ "${QUIET:-0}" = 1 ]; then
+    log="$(mktemp "${TMPDIR:-/tmp}/agentkit-command.XXXXXX")" || { kill "$waiter" 2>/dev/null; return 1; }
+    bash -o pipefail -c "$command" < /dev/null > "$log" 2>&1; rc=$?
+    if [ "$rc" != 0 ]; then cat "$log" >&2; fi
+    rm -f "$log"
+  else bash -o pipefail -c "$command" < /dev/null; rc=$?; fi
+  kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null
+  trap - INT TERM
+  [ -z "$saved_int" ] || eval "$saved_int"
+  [ -z "$saved_term" ] || eval "$saved_term"
+  if [ "$rc" != 0 ]; then
+    printf 'error: %s failed (exit %s). Command: %s. Review the output above and retry.\n' "$label" "$rc" "$command" >&2
+    return "$rc"
+  fi
+  [ "${QUIET:-0}" = 1 ] || printf '%s: complete\n' "$label"
+  return 0
+}
+
 # Install one tool after consent. Remote scripts are never accepted by YES=1.
 req_install() {
-  local t="$1"
+  local t="$1" rc
   req_plan "$t"
   case "$REQ_KIND" in
     pm)
       if [ "${YES:-0}" = 1 ]; then echo "Running: $REQ_CMD"
-      elif req_tty; then req_ask "Install $t with: $REQ_CMD ?" || return 1
-      else echo "No TTY: not running. Command: $REQ_CMD"; return 1; fi
+      elif req_tty; then req_ask "Install $t with: $REQ_CMD ?" || { echo "error: $t installation declined; required steps cannot complete. Run: $REQ_CMD" >&2; return 2; }
+      else echo "No TTY: not running. Command: $REQ_CMD"; return 2; fi
       ;;
     script)
       if req_tty; then
         echo "This downloads and runs a remote script. Exact command:"
         echo "  $REQ_CMD"
-        req_ask "Run it to install $t?" || return 1
+        req_ask "Run it to install $t?" || { echo "error: $t installation declined. Run: $REQ_CMD" >&2; return 2; }
       else
         echo "No TTY: not running a remote script. Run it yourself: $REQ_CMD"
-        return 1
+        return 2
       fi
       ;;
-    *) return 1 ;;
+    *) echo "error: cannot install $t automatically. Install it from $REQ_LINK and retry." >&2; return 2 ;;
   esac
-  eval "$REQ_CMD" < /dev/null || { echo "error: install of $t failed" >&2; return 1; }
+  req_run "Installing $t" "$REQ_CMD" || return 1
   if [ "$REQ_KIND" = script ] && [ -d "$HOME/.local/bin" ]; then
     case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
   fi
+  if [ "$t" = bun ] && [ -d "$HOME/.bun/bin" ]; then
+    PATH="$HOME/.bun/bin:$PATH"
+  fi
+  export PATH
   hash -r 2> /dev/null
+  if ! "$t" --version > /dev/null 2>&1; then
+    echo "error: $t installation finished but $t --version failed. Check PATH and retry: $REQ_CMD" >&2
+    return 1
+  fi
   return 0
 }
 
 check_requirements() {
-  local mode="${1:-report}" t
+  local mode="${1:-report}" t rc
   case "$mode" in install | report) ;; *) echo "check_requirements: use install or report" >&2; return 2 ;; esac
   case "${REQ_WANT:-auto}" in auto | claude | codex | both) ;; *) echo "check_requirements: REQ_WANT must be auto, claude, codex or both" >&2; return 2 ;; esac
   req_ui; req_detect; req_scan
@@ -235,23 +286,25 @@ check_requirements() {
   req_suggest
   if [ "$mode" = install ] && [ "${DRY:-0}" != 1 ]; then
     for t in git python3; do
-      eval "[ \"\$REQ_S_$t\" = ok ]" || req_install "$t"
+      eval "[ \"\$REQ_S_$t\" = ok ]" || req_install "$t" || return 1
     done
     req_scan
-    if ! req_agent_ok; then
+    if [ "${REQ_BOOTSTRAP:-0}" != 1 ] && ! req_agent_ok; then
       if [ "${REQ_WANT:-auto}" = auto ]; then
-        req_install claude || true
+        req_install claude; rc=$?
+        [ "$rc" = 0 ] || [ "$rc" = 2 ] || return "$rc"
         req_scan
-        req_agent_ok || { req_install codex || true; req_scan; }
+        req_agent_ok || { req_install codex || return 1; req_scan; }
       else
         for t in claude codex; do
-          eval "[ \"\$REQ_S_$t\" = ok ]" || { req_wants "$t" && { req_install "$t" || true; }; }
+          eval "[ \"\$REQ_S_$t\" = ok ]" || { req_wants "$t" && { req_install "$t" || return 1; }; }
         done
         req_scan
       fi
     fi
-    if req_met; then req_list; return 0; fi
+    if req_met; then [ "${QUIET:-0}" = 1 ] || req_list; return 0; fi
   fi
+  echo "error: required tools are unavailable; review the missing requirements and install commands above, then retry." >&2
   return 1
 }
 # <<< agentkit:requirements

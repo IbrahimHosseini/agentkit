@@ -443,9 +443,11 @@ hook_remove() { # prefix
 AGENTLOG_CMD() { printf 'python3 -I "%s/hooks/agent-log.py" check || true' "$AGENTKIT_HOME"; }
 
 step_hooks() {
+  local failed=0
   skipped hooks && { ui_item skipped "hooks: skipped (--skip hooks)"; ui_summary_add "$CUR" hooks skipped; return; }
   hook_apply SubagentStop agentkit-agent-log "$(AGENTLOG_CMD)" 20 "Add the SubagentStop agent-log hook to $SETTINGS?"
   ui_summary_add "$CUR" "SubagentStop hook" "$HOOK_RES"
+  [ "$HOOK_RES" != failed ] || failed=1
   if [ -n "$PROJECT" ]; then
     ui_item skipped "auto-update: skipped (user installations only)"
     ui_summary_add "$CUR" "SessionStart hook" skipped
@@ -455,7 +457,10 @@ step_hooks() {
   else
     hook_apply SessionStart agentkit-auto-update "\"$AGENTKIT_HOME/hooks/update-check.sh\"" 5 "Add the SessionStart auto-update hook to $SETTINGS?"
     ui_summary_add "$CUR" "SessionStart hook" "$HOOK_RES"
+    [ "$HOOK_RES" != failed ] || failed=1
   fi
+  [ "$failed" = 0 ] || { warn "hooks: settings.json could not be read or written; fix its JSON/permissions and rerun agentkit install."; ui_summary_print; return 1; }
+  return 0
 }
 
 # ---------------------------------------------------------------- Codex config.toml
@@ -501,29 +506,37 @@ step_gstack() {
   if [ "$DRY" = 1 ]; then dry "gstack: $cmd"; return; fi
   if [ "$cloning" = 1 ]; then
     ask "Install gstack (git clone into $gs, then its ./setup, needs git and bun)?" || { ui_item skipped "gstack: skipped. Manual: $cmd"; ui_summary_add gstack - skipped; return; }
-    command -v git > /dev/null 2>&1 || { warn "gstack: git not found. Manual: $cmd"; return; }
+    command -v git > /dev/null 2>&1 || { warn "gstack: git not found. Manual: $cmd"; ui_summary_add gstack clone failed; return 1; }
   else
     ask "Run gstack's ./setup for: $need (needs bun)?" || { ui_item skipped "gstack: skipped. Manual: $cmd"; ui_summary_add gstack - skipped; return; }
   fi
-  command -v bun > /dev/null 2>&1 || { warn "gstack: bun not found (https://bun.sh). Manual: $cmd"; return; }
+  if [ -x "$HOME/.bun/bin/bun" ]; then PATH="$HOME/.bun/bin:$PATH"; export PATH; fi
+  if ! command -v bun > /dev/null 2>&1 || ! bun --version > /dev/null 2>&1; then
+    say "gstack requires Bun. Installing its prerequisite before setup."
+    req_detect
+    req_install bun || { warn "gstack: required Bun installation failed or was declined. Review the error above, install Bun from https://bun.sh, then rerun agentkit install (or explicitly use --skip gstack)."; ui_summary_add gstack bun failed; return 1; }
+  fi
+  bun --version > /dev/null 2>&1 || { warn "gstack: Bun verification failed; fix Bun/PATH and retry."; ui_summary_add gstack bun failed; return 1; }
   if [ "$cloning" = 1 ]; then
-    mkdir -p "$(dirname "$gs")"
+    mkdir -p "$(dirname "$gs")" || { warn "gstack: cannot create parent of $gs; check permissions and retry."; return 1; }
+    say "Downloading gstack ..."
     # shellcheck disable=SC2046
-    git clone $(ui_git_progress_flag) --single-branch --depth 1 "$url" "$gs" || { warn "gstack: clone failed"; return; }
+    git clone $(ui_git_progress_flag) --single-branch --depth 1 "$url" "$gs" || { rc=$?; warn "gstack: clone failed (exit $rc); review Git output, check repository/network access, then retry. Manual: $cmd"; ui_summary_add gstack clone failed; return "$rc"; }
   fi
   for h in $need; do
     set_target "$h"
     [ "$h" = codex ] && say "  note: gstack on Codex is experimental; its safety skills (careful, guard, freeze) are advisory there."
-    mkdir -p "$STATE/logs" || { warn "cannot create $STATE/logs"; continue; }
+    mkdir -p "$STATE/logs" || { warn "cannot create $STATE/logs; check directory permissions and retry."; return 1; }
     log="$STATE/logs/gstack-setup-$TS.log"
     ui_spin "gstack setup (--host $h)" "$log" bash -c 'cd "$1" && exec ./setup --host "$2"' _ "$gs" "$h"; rc=$?
     arm_traps
     if [ "$rc" = 0 ]; then
       ui_item installed "gstack: set up for $h (log: $log)"; ui_summary_add "$h" gstack installed
     else
-      warn "gstack: ./setup --host $h failed; run it by hand in $gs (log: $log)"; ui_summary_add "$h" gstack failed
+      warn "gstack: ./setup --host $h failed (exit $rc); review $log, fix the reported error, then run ./setup --host $h in $gs or rerun agentkit install."; ui_summary_add "$h" gstack failed; return "$rc"
     fi
   done
+  return 0
 }
 
 step_karpathy() {
@@ -537,8 +550,10 @@ step_karpathy() {
   if claude plugin list 2> /dev/null | grep -q 'andrej-karpathy-skills'; then ui_item unchanged "karpathy: plugin already installed"; ui_summary_add claude karpathy unchanged; return; fi
   if [ "$DRY" = 1 ]; then dry "karpathy: claude plugin marketplace add $m; claude plugin install $p"; return; fi
   ask "Install the karpathy-guidelines plugin with the claude CLI?" || { ui_item skipped "karpathy: skipped. Manual: claude plugin marketplace add $m && claude plugin install $p"; ui_summary_add claude karpathy skipped; return; }
-  claude plugin marketplace add "$m" || warn "karpathy: marketplace add failed (maybe already added)"
-  claude plugin install "$p" || warn "karpathy: install failed; run it by hand"
+  if ! claude plugin marketplace list 2>/dev/null | grep -q 'forrestchang/andrej-karpathy-skills'; then
+    req_run "Adding Karpathy marketplace" 'claude plugin marketplace add https://github.com/forrestchang/andrej-karpathy-skills.git' || { ui_summary_add claude karpathy failed; return 1; }
+  fi
+  req_run "Installing Karpathy plugin" 'claude plugin install andrej-karpathy-skills@karpathy-skills' || { ui_summary_add claude karpathy failed; return 1; }
   ui_summary_add claude karpathy installed
 }
 

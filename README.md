@@ -31,6 +31,7 @@ The agents follow one workflow. A supervisor plans the work. You approve the pla
 - [Quick demo](#quick-demo)
 - [Requirements](#requirements)
 - [Install](#install)
+  - [macOS and Linux](#macos-and-linux)
   - [Native Windows](#native-windows)
   - [Windows through WSL2](#windows-through-wsl2)
   - [Targets](#targets)
@@ -72,9 +73,9 @@ To rebuild the GIF, run `python3 -I scripts/render-demo.py` in an authoring envi
 | `curl` | POSIX bootstrap command only | Download the shell installer. |
 | `git` | required | Clone and update. |
 | Python 3.9 or newer | required | The shared CLI. On POSIX, the command is `python3`. On Windows, the launcher checks `python`, `python3`, then `py -3`. |
-| `claude` or `codex` | at least one is required | The agent CLI you install for. |
+| `claude` or `codex` | required for each selected target | The agent CLI you install for. A desktop app does not replace it. |
 | `gh` | optional | `agentkit feedback`. |
-| `bun` | optional | Install of gstack. |
+| `bun` | required for gstack | Install and run gstack. Not required when you decline or skip gstack, or on native Windows. |
 
 On macOS and Linux, when a tool is missing, install does this:
 
@@ -82,15 +83,16 @@ On macOS and Linux, when a tool is missing, install does this:
 2. It suggests an install command for each missing tool.
 3. It asks `y/N` before it runs a command.
 
-These dependency-install rules apply to macOS and Linux. Native Windows reports missing requirements and asks you to install them yourself. It does not run `winget`, a package manager, or a remote installer.
+These dependency-install rules apply to macOS and Linux. For required tools, native Windows reports missing requirements and asks you to install them yourself. Optional desktop installation has a separate confirmation. It can run an official installer or Microsoft Store installation through `winget`.
 
 Rules:
 
 - With `--yes`, install accepts commands from a package manager (for example `brew install git`).
 - With `--yes`, install never runs a remote script (`curl ... | bash`). You must answer the prompt yourself, in a terminal.
 - With no terminal and without `--yes`, nothing is installed. Install prints the commands.
-- With `--yes`, package-manager commands run. Remote scripts never run with `--yes`.
-- The check follows `--target`. With `--target claude`, it needs `claude`. `codex` is then optional. With `--target codex`, it needs `codex`. `claude` is then optional. With `--target both`, it needs both. Without `--target`, one of the two is enough.
+- The check follows `--target`. With `--target claude`, it needs `claude`. With `--target codex`, it needs `codex`. With `--target both`, it needs both CLIs.
+- Without `--target`, install selects targets from the desktop apps and CLIs it detects. Each selected target still requires its CLI.
+- A detected desktop app and its CLI have separate status lines. A missing CLI remains a required dependency, even when the desktop app is installed.
 - With `--dry-run`, install only reports. It runs nothing.
 
 ### Platform status
@@ -119,11 +121,23 @@ On Linux, if no supported package manager is found, install Bash, `curl`, `git`,
 
 ## Install
 
+### macOS and Linux
+
+Run this command in a terminal on **macOS or Linux**:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/install.sh | bash
 ```
 
-The script clones the repo to `~/.agentkit`. It links the CLI to `~/.local/bin/agentkit`. Then it runs `agentkit install`. Each change to your settings asks for a yes first.
+The script clones the repo to `~/.agentkit`, then runs `agentkit install`. After that installation succeeds, it links the CLI to `~/.local/bin/agentkit`. Each change to your settings asks for a yes first.
+
+The installer checks desktop apps separately from CLIs. On macOS, it checks system and user Applications folders. On Windows and Linux, it checks supported installation records and application locations. It recognizes Claude, the older Codex app, and the new ChatGPT app that contains Codex. ChatGPT Classic does not count as Codex.
+
+Desktop installation is optional. It needs a separate interactive confirmation, even with `--yes`. The installer uses official downloads for supported systems and architectures. When automatic installation is unavailable, complete the official installer, then let agentkit check the result. Opening an installer does not mean installation succeeded.
+
+On macOS, automatic installation checks the downloaded app signature and installs into `~/Applications`. Existing apps are not replaced. Linux support depends on the distribution and version. The installer explains unsupported combinations. See the official [Claude download page](https://claude.com/download) and [ChatGPT with Codex download page](https://chatgpt.com/download/) for current availability.
+
+If you accept gstack installation, agentkit installs and checks Bun before gstack setup. A failed Bun installation stops that installation. Use `--skip gstack` if you do not want gstack or Bun.
 
 ### Alpine prerequisites
 
@@ -143,7 +157,7 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 
 Native Windows support is merged into `main`. Clone the repository, then run its PowerShell bootstrap.
 
-Install Python 3.9 or newer, Git for Windows, and the native `claude` or `codex` CLI first. Add these tools to PATH and open a new terminal. The bootstrap prints guidance for missing prerequisites. It does not install them.
+Install Python 3.9 or newer, Git for Windows, and the native CLI for each selected target first. Add these tools to PATH and open a new terminal. The bootstrap prints guidance for missing prerequisites. It does not install these tools. If a target CLI is missing, the core provides official instructions and can check again after manual installation.
 
 Run in PowerShell:
 
@@ -188,7 +202,9 @@ The [manual WSL2 checklist](CONTRIBUTING.md#manual-wsl2-verification) checks age
 
 ### What you see
 
-Install prints a logo, then numbered steps such as `[2/6]`, with a progress line for long work such as `git clone`. At the end it prints a summary table. When the output is not a terminal, or `NO_COLOR` is set, or you pass `--quiet`, the output is plain text. `--quiet` prints only errors.
+Install prints a logo, then numbered steps such as `[2/6]`. Downloads show progress when available. Other long operations show a waiting indicator. Plain output shows the operation and its result. The final summary identifies completed, skipped, and failed items. `NO_COLOR` disables terminal styling. `--quiet` prints only errors and required questions.
+
+An error identifies the failed stage and its known cause. It includes relevant output or a log path, plus a suggested next action. When the cause is unknown, the message includes the available failure details. A failed required step or accepted installation returns a nonzero exit code. Install does not report complete success after that failure. Errors remain visible with `--quiet`.
 
 Pass flags after `bash -s --`:
 
@@ -199,7 +215,7 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 | Flag | Effect |
 |---|---|
 | `--dry-run` | Show what would change. Write nothing. |
-| `--yes`, `-y` | Answer yes to every question. |
+| `--yes`, `-y` | Accept ordinary install prompts. Remote scripts and desktop installation still need separate interactive confirmation. |
 | `--target claude\|codex\|both` | Choose the CLI to install for. See below. |
 | `--project DIR` | Install into `DIR/.claude` and `DIR/CLAUDE.md`, not into `~/.claude`. Claude only. |
 | `--skip STEP` | Skip a step. STEP is `gstack`, `karpathy`, `claude-md`, `hooks` or `skills`. Repeat the flag to skip more. |
@@ -210,7 +226,7 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 
 `--target` sets which CLI gets the install.
 
-- Without `--target`, `install` uses every CLI it finds: `claude`, `codex`, or both.
+- Without `--target`, `install` selects Claude, Codex, or both from the desktop apps and CLIs it finds. Each selected target requires its CLI.
 - `update`, `uninstall` and `doctor` use every target that is already installed.
 - With `--target claude`, files go to `~/.claude` (or `CLAUDE_CONFIG_DIR`).
 - With `--target codex`, files go to `~/.codex` (or `CODEX_HOME`).
@@ -513,7 +529,10 @@ The tests use temporary homes and fake target CLIs. They do not need a package i
 |---|---|
 | `agentkit: command not found` | Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile. Open a new shell. |
 | `only one agentkit marker found` | Someone deleted one marker line in CLAUDE.md. Fix the file by hand: keep both `<!-- agentkit:start -->` and `<!-- agentkit:end -->`, or delete both. |
-| `bun not found`, gstack skipped | Install bun from https://bun.sh. Then run the printed `git clone ... && cd ... && ./setup --host ...` command, or run `agentkit install` again. |
+| Bun installation failed | Read the displayed error or log. Fix the reported problem, then run `agentkit install` again. Use `--skip gstack` to install without gstack. |
+| Desktop app installed, CLI missing | Install the CLI named in the requirements report. A desktop app does not satisfy the CLI requirement. |
+| Desktop installer opened, app still missing | Complete the official installer, then repeat the check. Check the error details for unsupported systems or architectures. |
+| An installation step failed | Read the stage name, command output or log path, and suggested action. Fix the reported problem, then repeat the installation. |
 | gstack skipped without a message | You answered no, or there was no terminal. Use `--yes` or run the printed command. |
 | An agent file shows `modified` in doctor | You edited it. That is fine. Update keeps your file and writes `.agentkit-new`. |
 | `skills/NAME exists and is not managed by agentkit` | A skill with that name exists. Use `--force` to replace it (with a backup), or keep yours. |

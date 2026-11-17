@@ -61,7 +61,7 @@ class NativeLifecycleTests(unittest.TestCase):
         self.env = dict(self.git_env, HOME=str(self.home), USERPROFILE=str(self.home),
                         CODEX_HOME=str(self.home / 'codex custom'), CLAUDE_CONFIG_DIR=str(self.home / 'claude custom'),
                         AGENT_LOG_DIR=str(self.home / 'agent logs'), AGENTKIT_HOME=str(self.repo),
-                        AGENTKIT_UPDATE_INTERVAL='0', NO_COLOR='1', PYTHONUTF8='1')
+                        AGENTKIT_UPDATE_INTERVAL='0', NO_COLOR='1', PYTHONUTF8='1', AGENTKIT_APPLICATION_DIRS=str(self.home / 'Applications'))
         for key in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'AGENTKIT_REQS_OK'):
             self.env.pop(key, None)
         self.git_run('clone', '-q', '--bare', str(self.source), str(self.origin))
