@@ -70,11 +70,15 @@ req_detect() {
 # Sets REQ_V_<tool> (version) and REQ_S_<tool> (ok | old | missing).
 # shellcheck disable=SC2154
 req_scan() {
-  local t v major minor
+  local t v major minor raw
   for t in git python3 claude codex gh bun; do
     v=""
     if command -v "$t" > /dev/null 2>&1; then
-      v="$("$t" --version 2> /dev/null | head -n 1 | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1)"
+      if ! raw="$("$t" --version 2>&1)"; then
+        eval "REQ_S_$t=broken; REQ_V_$t=\$raw"
+        continue
+      fi
+      v="$(printf '%s\n' "$raw" | head -n 1 | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1)"
       [ -n "$v" ] || v="unknown"
       eval "REQ_S_$t=ok"
       if [ "$t" = python3 ]; then
@@ -110,7 +114,7 @@ req_wants() {
 }
 # REQ_S_<tool> is assigned through eval in req_scan, so shellcheck cannot see it.
 # shellcheck disable=SC2154
-req_met() { [ "$REQ_S_git" = ok ] && [ "$REQ_S_python3" = ok ] && req_agent_ok; }
+req_met() { [ "$REQ_S_git" = ok ] && [ "$REQ_S_python3" = ok ] && { [ "${REQ_BOOTSTRAP:-0}" = 1 ] || req_agent_ok; }; }
 
 req_row() {
   local mark="$1" color="$2" name="$3" note="$4"
@@ -121,8 +125,10 @@ req_list() {
   local t s v note
   echo "Requirements:"
   for t in git python3 claude codex gh bun; do
+    if [ "${REQ_BOOTSTRAP:-0}" = 1 ]; then case "$t" in git | python3) ;; *) continue ;; esac; fi
     eval "s=\$REQ_S_$t; v=\$REQ_V_$t"
     case "$t:$s" in
+      *:broken) req_row "$REQ_BADM" "$REQ_R" "$t" "--version failed: $v; reinstall or fix this command" ;;
       python3:old) req_row "$REQ_BADM" "$REQ_R" "$t" "found $v, need 3.9 or newer" ;;
       *:ok) req_row "$REQ_OKM" "$REQ_G" "$t" "$v" ;;
       *)
@@ -134,6 +140,7 @@ req_list() {
               if req_agent_ok; then note="optional (the other agent is installed)"
               else note="one of claude or codex is required"; fi
             else note="required"; fi ;;
+          bun) note="required when gstack installation is accepted" ;;
           *) note="optional" ;;
         esac
         req_row "$REQ_BADM" "$REQ_R" "$t" "not found, $note"
@@ -200,12 +207,13 @@ req_suggest_one() {
 req_suggest() {
   local t s any=0
   for t in git python3 gh bun; do
+    if [ "${REQ_BOOTSTRAP:-0}" = 1 ]; then case "$t" in git | python3) ;; *) continue ;; esac; fi
     eval "s=\$REQ_S_$t"
     [ "$s" = ok ] && continue
     [ "$any" = 0 ] && { echo "How to install what is missing:"; any=1; }
     req_suggest_one "$t"
   done
-  if ! req_agent_ok; then
+  if [ "${REQ_BOOTSTRAP:-0}" != 1 ] && ! req_agent_ok; then
     [ "$any" = 0 ] && echo "How to install what is missing:"
     for t in claude codex; do
       eval "s=\$REQ_S_$t"
@@ -214,38 +222,81 @@ req_suggest() {
   fi
 }
 
+# Keep child diagnostics and prompts visible; only the waiting helper is backgrounded.
+req_run() {
+  local label="$1" command="$2" waiter rc saved_int saved_term log=""
+  saved_int="$(trap -p INT)"; saved_term="$(trap -p TERM)"
+  [ "${QUIET:-0}" = 1 ] || printf '%s ...\n' "$label"
+  (
+    tick=""
+    trap '[ -z "$tick" ] || kill "$tick" 2>/dev/null; exit 0' INT TERM
+    while :; do
+      sleep 5 & tick=$!
+      wait "$tick" || exit 0
+      [ "${QUIET:-0}" = 1 ] || printf '  Waiting: %s\n' "$label"
+    done
+  ) &
+  waiter=$!
+  trap 'kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null; exit 130' INT
+  trap 'kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null; exit 143' TERM
+  if [ "${QUIET:-0}" = 1 ]; then
+    log="$(mktemp "${TMPDIR:-/tmp}/agentkit-command.XXXXXX")" || { kill "$waiter" 2>/dev/null; return 1; }
+    bash -o pipefail -c "$command" < /dev/null > "$log" 2>&1; rc=$?
+    if [ "$rc" != 0 ]; then cat "$log" >&2; fi
+    rm -f "$log"
+  else bash -o pipefail -c "$command" < /dev/null; rc=$?; fi
+  kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null
+  trap - INT TERM
+  [ -z "$saved_int" ] || eval "$saved_int"
+  [ -z "$saved_term" ] || eval "$saved_term"
+  if [ "$rc" != 0 ]; then
+    printf 'error: %s failed (exit %s). Command: %s. Review the output above and retry.\n' "$label" "$rc" "$command" >&2
+    return "$rc"
+  fi
+  [ "${QUIET:-0}" = 1 ] || printf '%s: complete\n' "$label"
+  return 0
+}
+
 # Install one tool after consent. Remote scripts are never accepted by YES=1.
 req_install() {
-  local t="$1"
+  local t="$1" rc
   req_plan "$t"
   case "$REQ_KIND" in
     pm)
       if [ "${YES:-0}" = 1 ]; then echo "Running: $REQ_CMD"
-      elif req_tty; then req_ask "Install $t with: $REQ_CMD ?" || return 1
-      else echo "No TTY: not running. Command: $REQ_CMD"; return 1; fi
+      elif req_tty; then req_ask "Install $t with: $REQ_CMD ?" || { echo "error: $t installation declined; required steps cannot complete. Run: $REQ_CMD" >&2; return 2; }
+      else echo "No TTY: not running. Command: $REQ_CMD"; return 2; fi
       ;;
     script)
       if req_tty; then
         echo "This downloads and runs a remote script. Exact command:"
         echo "  $REQ_CMD"
-        req_ask "Run it to install $t?" || return 1
+        req_ask "Run it to install $t?" || { echo "error: $t installation declined. Run: $REQ_CMD" >&2; return 2; }
       else
         echo "No TTY: not running a remote script. Run it yourself: $REQ_CMD"
-        return 1
+        return 2
       fi
       ;;
-    *) return 1 ;;
+    *) echo "error: cannot install $t automatically. Install it from $REQ_LINK and retry." >&2; return 2 ;;
   esac
-  eval "$REQ_CMD" < /dev/null || { echo "error: install of $t failed" >&2; return 1; }
+  req_run "Installing $t" "$REQ_CMD" || return 1
   if [ "$REQ_KIND" = script ] && [ -d "$HOME/.local/bin" ]; then
     case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
   fi
+  if [ "$t" = bun ] && [ -d "$HOME/.bun/bin" ]; then
+    PATH="$HOME/.bun/bin:$PATH"
+  fi
+  export PATH
   hash -r 2> /dev/null
+  if ! "$t" --version > /dev/null 2>&1; then
+    echo "error: $t installation finished but $t --version failed. Check PATH and retry: $REQ_CMD" >&2
+    return 1
+  fi
   return 0
 }
 
 check_requirements() {
-  local mode="${1:-report}" t
+  local mode="${1:-report}" t rc
   case "$mode" in install | report) ;; *) echo "check_requirements: use install or report" >&2; return 2 ;; esac
   case "${REQ_WANT:-auto}" in auto | claude | codex | both) ;; *) echo "check_requirements: REQ_WANT must be auto, claude, codex or both" >&2; return 2 ;; esac
   req_ui; req_detect; req_scan
@@ -257,31 +308,35 @@ check_requirements() {
   req_suggest
   if [ "$mode" = install ] && [ "${DRY:-0}" != 1 ]; then
     for t in git python3; do
-      eval "[ \"\$REQ_S_$t\" = ok ]" || req_install "$t"
+      eval "[ \"\$REQ_S_$t\" = ok ]" || req_install "$t" || return 1
     done
     req_scan
-    if ! req_agent_ok; then
+    if [ "${REQ_BOOTSTRAP:-0}" != 1 ] && ! req_agent_ok; then
       if [ "${REQ_WANT:-auto}" = auto ]; then
-        req_install claude || true
+        req_install claude; rc=$?
+        [ "$rc" = 0 ] || [ "$rc" = 2 ] || return "$rc"
         req_scan
-        req_agent_ok || { req_install codex || true; req_scan; }
+        req_agent_ok || { req_install codex || return 1; req_scan; }
       else
         for t in claude codex; do
-          eval "[ \"\$REQ_S_$t\" = ok ]" || { req_wants "$t" && { req_install "$t" || true; }; }
+          eval "[ \"\$REQ_S_$t\" = ok ]" || { req_wants "$t" && { req_install "$t" || return 1; }; }
         done
         req_scan
       fi
     fi
-    if req_met; then req_list; return 0; fi
+    if req_met; then [ "${QUIET:-0}" = 1 ] || req_list; return 0; fi
   fi
+  echo "error: required tools are unavailable; review the missing requirements and install commands above, then retry." >&2
   return 1
 }
 # <<< agentkit:requirements
 
 # Check git, python3 and an agent CLI before cloning (the clone needs git).
 export DRY YES QUIET REQ_WANT
-check_requirements install || die "requirements are not met"
-export AGENTKIT_REQS_OK=1
+REQ_BOOTSTRAP=1 check_requirements install || die "bootstrap requirements are not met"
+# Desktop detection and target CLI installation run once in the Python core.
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
+export PATH
 
 tmp_clone=""
 cleanup() { [ -n "$tmp_clone" ] && [ -d "$tmp_clone" ] && rm -rf "${tmp_clone:?}"; }
@@ -297,26 +352,30 @@ if [ -n "$here" ] && [ -f "$here/bin/agentkit" ]; then
   [ "$QUIET" = 1 ] || echo "Using checkout: $AGENTKIT_HOME"
 else
   AGENTKIT_HOME="${AGENTKIT_HOME:-$HOME/.agentkit}"
+  export AGENTKIT_HOME
   if [ -d "$AGENTKIT_HOME/.git" ]; then
     if [ "$DRY" = 1 ]; then echo "[dry-run] git -C $AGENTKIT_HOME pull --ff-only"
-    else git -C "$AGENTKIT_HOME" pull --ff-only || echo "warning: could not fast-forward $AGENTKIT_HOME; continuing with the current version" >&2; fi
+    else req_run "Updating agentkit checkout" 'git -C "$AGENTKIT_HOME" pull --ff-only' || die "checkout update failed; inspect Git output, resolve local changes or network access, then retry"; fi
   elif [ -e "$AGENTKIT_HOME" ]; then
     die "$AGENTKIT_HOME exists and is not a git clone"
   elif [ "$DRY" = 1 ]; then
-    real_home="$AGENTKIT_HOME"
-    tmp_clone="$(mktemp -d "${TMPDIR:-/tmp}/agentkit-dry.XXXXXX")" || die "mktemp failed"
-    echo "[dry-run] git clone $REPO $AGENTKIT_HOME  (using a temporary clone for this dry run)"
-    git clone --quiet "$REPO" "$tmp_clone/agentkit" || die "clone failed"
-    AGENTKIT_HOME="$tmp_clone/agentkit"
+    echo "[dry-run] git clone $REPO $AGENTKIT_HOME"
+    echo "[dry-run] Would then check target CLIs, offer optional desktop installation and install agentkit. No download or files written."
+    exit 0
   else
     mkdir -p "$(dirname "$AGENTKIT_HOME")" || die "cannot create $(dirname "$AGENTKIT_HOME")"
     if [ -t 2 ]; then clone_flags="--progress"; else clone_flags=""; fi
     # shellcheck disable=SC2086
-    git clone $clone_flags "$REPO" "$AGENTKIT_HOME" || die "clone failed"
+    [ "$QUIET" = 1 ] || echo "Downloading agentkit checkout ..."
+    git clone $clone_flags "$REPO" "$AGENTKIT_HOME" || die "clone failed; review Git output and check repository/network access"
   fi
 fi
 [ -x "$AGENTKIT_HOME/bin/agentkit" ] || die "$AGENTKIT_HOME/bin/agentkit not found"
 export AGENTKIT_HOME
+
+# Complete requirements and the selected installation before adding a launcher.
+# A missing target CLI must not leave a new launcher claiming a usable install.
+AGENTKIT_BOOTSTRAP_ACTIVE=1 "$AGENTKIT_HOME/bin/agentkit" install "$@" || exit $?
 
 # Link the CLI into ~/.local/bin. Ask before replacing anything that is not already our link.
 yes=0
@@ -344,25 +403,24 @@ elif [ -e "$link" ] || [ -L "$link" ]; then
   elif confirm "$link is $what. Replace it with a link to $want?"; then
     if [ ! -L "$link" ]; then
       bak="$link.bak-$(date +%Y%m%d-%H%M%S)"
-      mv "$link" "$bak" && { [ "$QUIET" = 1 ] || echo "Backed up $link to $bak"; }
+      mv "$link" "$bak" || die "launcher backup failed: $link; check permissions and retry"
+      [ "$QUIET" = 1 ] || echo "Backed up $link to $bak"
     fi
-    ln -sf "$want" "$link" && { [ "$QUIET" = 1 ] || echo "Linked $link"; }
+    ln -sf "$want" "$link" || die "launcher creation failed: $link; check permissions and retry"
+    [ "$QUIET" = 1 ] || echo "Linked $link"
   else
     echo "warning: left $link as it is (it is $what). The CLI is at $want" >&2
   fi
 elif [ "$DRY" = 1 ]; then
   echo "[dry-run] ln -s $want $link"
 else
-  mkdir -p "$HOME/.local/bin" && ln -s "$want" "$link" && { [ "$QUIET" = 1 ] || echo "Linked $link"; }
+  mkdir -p "$HOME/.local/bin" && ln -s "$want" "$link" || die "launcher creation failed: $link; check directory permissions and retry"
+  [ "$QUIET" = 1 ] || echo "Linked $link"
 fi
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) echo "warning: $HOME/.local/bin is not on your PATH. Add this to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2 ;;
 esac
 
-# Not exec when a temp clone must be cleaned up afterwards.
-if [ -n "$tmp_clone" ]; then
-  "$AGENTKIT_HOME/bin/agentkit" install "$@"
-  exit $?
-fi
-exec "$AGENTKIT_HOME/bin/agentkit" install "$@"
+[ "$QUIET" = 1 ] || echo "Done. Run agentkit doctor to check the setup."
+exit 0

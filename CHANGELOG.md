@@ -5,6 +5,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
+### Added
+
+- Per-agent model and effort selection for Claude Code and Codex after installation prerequisites, with a final confirmation before saving.
+- `agentkit models` to change installed agents independently, including `--agent`, `--target`, Claude project installations and dry runs. Saved choices survive updates; unmanaged, edited and linked agents are skipped.
+- Bounded Codex model discovery through app-server, offline catalogs, manual model IDs, and access guidance. Model preferences contain no credentials; saves back up files and roll back on failure.
+- Separate desktop-app detection and optional desktop installation. A desktop app does not replace its required target CLI.
+
+### Changed
+
+- Installation reports progress, completed/skipped stages and actionable failures. Accepted gstack installation requires Bun and propagates setup errors.
+- Unattended installation and `--yes` preserve existing/default model settings. Interactive model selection supports keeping inherited effort and restoring upstream defaults.
+
+### Fixed
+
+- README icon rendering now uses a local PNG asset.
+- Noninteractive Windows installs skip optional desktop prompts instead of reopening a console that may wait indefinitely for input.
+
 ## [0.3.1] - 2026-11-14
 
 ### Changed
@@ -78,7 +97,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.1.1...v0.2.0

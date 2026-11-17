@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List
 
 import codex
-from . import integrations, platforms
+from . import desktop, integrations, models, platforms
 from .managed import atomic_write, digest, linked_parent, load_manifest, remove_guarded_tree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,10 +22,11 @@ END = '<!-- agentkit:end -->'
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog='agentkit', description='Commands: install update doctor uninstall version help; POSIX only: auto-update log feedback')
+    p = argparse.ArgumentParser(prog='agentkit', description='Commands: install update models doctor uninstall version help; POSIX only: auto-update log feedback')
     p.add_argument('command', nargs='?', default='help')
     p.add_argument('--target', choices=['claude', 'codex', 'both'])
     p.add_argument('--project', type=Path)
+    p.add_argument('--agent', help='Configure one agent (models command only)')
     for flag in ['dry-run', 'force', 'quiet', 'purge']:
         p.add_argument('--' + flag, action='store_true')
     p.add_argument('--yes', '-y', action='store_true')
@@ -36,6 +37,10 @@ def parser() -> argparse.ArgumentParser:
 class Lifecycle:
     def __init__(self, args: argparse.Namespace):
         self.args = args
+        if args.agent and args.command != 'models':
+            raise ValueError('--agent is supported only by agentkit models')
+        if args.command == 'models' and (args.force or args.purge or args.skip):
+            raise ValueError('models does not support --force, --purge or --skip')
         self.root = Path(os.environ.get('AGENTKIT_HOME', ROOT)).resolve()
         self.home = platforms.user_home()
         self.homes = {'claude': Path(os.environ.get('CLAUDE_CONFIG_DIR', self.home / '.claude')),
@@ -58,10 +63,16 @@ class Lifecycle:
         self.rows = []
         self.step = 0
         self.total_steps = 0
+        self.apps = desktop.discover() if args.command in ('install', 'doctor') else {}
+        self.install_targets = None
 
     def say(self, text: str) -> None:
         if not self.args.quiet:
             print(text, flush=True)
+
+    def detail(self, text: str) -> None:
+        if self.args.command != 'update' or self.args.dry_run:
+            self.say(text)
 
     def warn(self, text: str) -> None:
         print('warning: ' + text, file=sys.stderr)
@@ -81,7 +92,9 @@ class Lifecycle:
         if self.args.target:
             return ['claude', 'codex'] if self.args.target == 'both' else [self.args.target]
         if self.args.command == 'install':
-            found = [t for t in self.homes if platforms.find_command(t)]
+            if self.install_targets is not None:
+                return self.install_targets
+            found = [t for t in self.homes if platforms.find_command(t) or t in self.apps]
         else:
             found = [t for t, home in self.homes.items() if (home / 'agentkit/manifest.json').exists()]
         return found or ['claude']
@@ -118,20 +131,79 @@ class Lifecycle:
         return output.getvalue().strip()
 
     def requirements(self) -> None:
+        self.install_targets = self.targets()
+        self.say('Application detection:')
+        for target in self.homes:
+            app = self.apps.get(target)
+            self.say('  ' + target + ' desktop: ' + (f'installed ({app.name}: {app.path})' if app else desktop.support(target) or 'not found'))
+            self.say('  ' + target + ' CLI: ' + (platforms.find_command(target) or 'not found'))
+        wanted = 'both' if len(self.install_targets) == 2 else self.install_targets[0]
+        if not self.args.target and not self.args.project and not self.apps and len(self.install_targets) == 1:
+            wanted = 'auto'
         if not platforms.is_windows():
-            script = '. "$1"; YES="$2" DRY="$3" REQ_WANT="$4" check_requirements install'
-            if os.environ.get('AGENTKIT_REQS_OK') == '1':
-                return
+            # The bootstrap only handles Git/Python. Never trust an environment
+            # flag to bypass readiness of a target selected from a desktop app.
+            script = '. "$1"; YES="$2" DRY="$3" QUIET="$5" REQ_WANT="$4" check_requirements install'
             proc = platforms.run(['bash', '-c', script, '_', str(self.root / 'lib/requirements.sh'),
-                                  str(int(self.args.yes)), str(int(self.args.dry_run)), self.args.target or 'auto'], stdout=subprocess.DEVNULL if self.args.quiet else None)
+                                  str(int(self.args.yes)), str(int(self.args.dry_run)), wanted, str(int(self.args.quiet))])
             if proc.returncode:
-                raise ValueError('requirements are not met')
-            return
-        if sys.version_info < (3, 9):
-            raise ValueError('Python >= 3.9 is required')
-        missing = [name for name in ['git'] + self.targets() if not platforms.find_command(name)]
-        if missing:
-            raise ValueError('requirements are not met: install ' + ', '.join(missing) + ' and add them to PATH')
+                raise ValueError(f'requirements are not met: CLI prerequisites failed (exit {proc.returncode}); review the missing tools and commands above, then rerun agentkit install')
+            for folder in (self.home / '.local/bin', self.home / '.bun/bin'):
+                if folder.is_dir():
+                    os.environ['PATH'] = str(folder) + os.pathsep + os.environ.get('PATH', '')
+        else:
+            if sys.version_info < (3, 9):
+                raise ValueError('Python >= 3.9 is required')
+            if not platforms.find_command('git'):
+                raise ValueError('Git is required; install Git for Windows from https://git-scm.com/download/win and reopen your terminal')
+            for target in self.install_targets:
+                if platforms.find_command(target):
+                    continue
+                url = 'https://code.claude.com/docs/en/setup' if target == 'claude' else 'https://developers.openai.com/codex/cli/'
+                self.say(target + ' CLI is required. Official installation instructions: ' + url)
+                if self.args.dry_run or not sys.stdin.isatty():
+                    raise ValueError(target + ' CLI not found. Install it using ' + url + ', add it to PATH, then retry')
+                if not self.ask('Install the required ' + target + ' CLI using the official instructions, then recheck?'):
+                    raise ValueError(target + ' CLI installation declined; installation is incomplete. See ' + url)
+                input('Waiting: finish the CLI installation, then press Enter to recheck: ')
+        if wanted == 'auto':
+            self.install_targets = [t for t in self.homes if platforms.find_command(t)] or self.install_targets
+        for target in self.install_targets:
+            error = platforms.command_error(target)
+            if error:
+                raise ValueError(target + ' CLI is required: ' + error + '. Check its installation/PATH, then retry.')
+
+    def desktop_installations(self) -> None:
+        for target in self.targets():
+            if target in self.apps:
+                self.rows.append((target, 'desktop', 'already installed'))
+                continue
+            reason = desktop.support(target)
+            if reason:
+                self.say(target + ' desktop: ' + reason + '; see ' + desktop.PAGES[target])
+                self.rows.append((target, 'desktop', 'unsupported'))
+                continue
+            if self.args.dry_run:
+                self.say('[dry-run] Would offer optional ' + target + ' desktop installation with separate confirmation')
+                continue
+            # Explicit desktop consent is independent of --yes. Piped bootstrap
+            # execution still has an interactive stdin once exec reaches here.
+            with desktop.terminal() as stream:
+                interactive = stream is not None
+            if not interactive:
+                self.say(target + ' desktop: skipped (separate interactive confirmation required); ' + desktop.PAGES[target])
+                self.rows.append((target, 'desktop', 'skipped'))
+                continue
+            if desktop.answer('Install optional ' + target + ' desktop from ' + desktop.PAGES[target] + '? [y/N] ').lower() not in ('y', 'yes'):
+                self.rows.append((target, 'desktop', 'skipped'))
+                continue
+            try:
+                desktop.install(target, self.say, self.args.quiet)
+            except ValueError:
+                self.rows.append((target, 'desktop', 'failed'))
+                raise
+            self.apps = desktop.discover()
+            self.rows.append((target, 'desktop', 'installed'))
 
     def instruction_path(self) -> Path:
         if self.current == 'codex':
@@ -152,7 +224,7 @@ class Lifecycle:
         status = self.helper(args)
         if status in ('none', 'unchanged'):
             if status == 'unchanged':
-                self.say('  = ' + path.name + ': block already up to date')
+                self.detail('  = ' + path.name + ': block already up to date')
                 self.rows.append((self.current, path.name, 'unchanged'))
             return
         if mode == 'install' and '# Multi-agent workflow' in (integrations.rd(str(path)) or '').replace(START, '') and START not in (integrations.rd(str(path)) or ''):
@@ -165,7 +237,7 @@ class Lifecycle:
         self.backup(path)
         args[-1] = 'write'
         self.helper(args)
-        self.say('  + ' + path.name + ': ' + ('removed agentkit block' if mode == 'uninstall' else status + ' block'))
+        self.detail('  + ' + path.name + ': ' + ('removed agentkit block' if mode == 'uninstall' else status + ' block'))
         self.rows.append((self.current, path.name, status))
 
     def sources(self, temporary: Path, old: dict) -> tuple:
@@ -178,6 +250,7 @@ class Lifecycle:
             if linked_parent(directory, self.target):
                 raise ValueError('refusing linked parent directory: ' + str(directory))
         files = {}
+        preferences = models.load_preferences(self.target)
         eligible = temporary / 'sources'
         rendered = temporary / 'rendered'
         eligible.mkdir()
@@ -197,6 +270,10 @@ class Lifecycle:
                     self.warn('Codex agent(s) ' + src.stem + ' not installed: ' + str(dest) + ' exists and is not managed by agentkit. Use --force to back it up and replace it.')
                     continue
                 shutil.copy2(src, eligible / src.name)
+            if src.stem in preferences:
+                patched = rendered / (src.stem + ('.toml' if self.current == 'codex' else '.md'))
+                patched.write_bytes(models.patch_agent(out.read_bytes(), self.current, preferences[src.stem]))
+                out = patched
             files[rel] = out
         if 'skills' not in self.args.skip:
             for folder in sorted((self.root / 'skills').iterdir()):
@@ -257,7 +334,7 @@ class Lifecycle:
         old = load_manifest(manifest)
         new = {}
         added = updated = same = forced = removed = 0
-        self.say('agentkit ' + self.version + ': installing into ' + str(self.target))
+        self.detail('agentkit ' + self.version + ': installing into ' + str(self.target))
         with tempfile.TemporaryDirectory(prefix='agentkit-render-') as work:
             files, block = self.sources(Path(work), old)
             for rel, src in files.items():
@@ -304,7 +381,7 @@ class Lifecycle:
                     updated += 1
                     label = ' (updated)'
                 if not exists or current_hash != sha or replace_link:
-                    self.say('  + ' + rel + label)
+                    self.detail('  + ' + rel + label)
                 if not self.args.dry_run:
                     if dest.is_symlink():
                         dest.unlink()
@@ -321,7 +398,7 @@ class Lifecycle:
                     if not self.args.dry_run:
                         dest.unlink()
                     removed += 1
-                    self.say('  + ' + rel + ' (removed upstream)')
+                    self.detail('  + ' + rel + ' (removed upstream)')
                 elif dest.exists():
                     self.say('kept ' + rel + ' (removed upstream, but you edited it)')
             self.say(('  + ' if added + updated + forced + removed else '  = ') + f'Files: {added} added, {updated} updated, {same} unchanged, {forced} replaced (--force), {removed} removed upstream')
@@ -338,7 +415,7 @@ class Lifecycle:
                     with contextlib.redirect_stdout(status):
                         codex.config_put(str(cfg), str(block), 'check')
                     if status.getvalue().strip() == 'unchanged':
-                        self.say('  = config.toml: block already up to date')
+                        self.detail('  = config.toml: block already up to date')
                         self.rows.append((self.current, 'config.toml', 'unchanged'))
                     if status.getvalue().strip() != 'unchanged':
                         if self.args.dry_run:
@@ -532,7 +609,7 @@ class Lifecycle:
             'install': 'step_hooks',
             'update': 'refresh_hooks',
             'uninstall': 'hook_remove agentkit-',
-            'extras': 'TARGETS="$4"; step_gstack; if has_target claude; then step_karpathy; fi; ui_summary_print',
+            'extras': 'TARGETS="$4"; rc=0; step_gstack || rc=$?; if [ "$rc" = 0 ] && has_target claude; then step_karpathy || rc=$?; fi; ui_summary_print; exit "$rc"',
         }
         opts = ['--target', self.current]
         for skip in self.args.skip:
@@ -552,37 +629,43 @@ class Lifecycle:
             self.rows.append((self.current, 'SubagentStop hook', 'unchanged' if 'agentkit-agent-log' in existing else 'added'))
         result = platforms.run(['bash', '-c', script, '_', str(self.root / 'lib/legacy-cli.sh')] + opts, stdout=subprocess.DEVNULL if stage == 'doctor' and self.args.quiet else None)
         if result.returncode:
-            raise ValueError('POSIX integration failed')
+            raise ValueError(f'{stage} integration failed (exit {result.returncode}); review the failed stage and its output/log above, fix the reported issue, then rerun agentkit install')
 
     def execute(self) -> int:
         cmd = self.args.command
         if cmd == 'version':
             print(self.version)
         elif cmd == 'help':
-            self.say('agentkit install | update | doctor | uninstall | version | help')
+            self.say('agentkit install | update | models | doctor | uninstall | version | help')
             parser().print_help()
         elif cmd == 'install':
             self.say('agentkit ' + self.version)
             if sys.stdout.isatty() and 'NO_COLOR' not in os.environ and not self.args.quiet:
                 print('\033[36m( o.o )\033[0m')
             self.requirements()
+            model_batch = models.configure(self, installing=True)
+            self.desktop_installations()
+            models.commit(self, model_batch)
             if self.args.dry_run:
                 self.say('(dry run: nothing is written)')
             self.total_steps = sum(1 + int('claude-md' not in self.args.skip) + int(target == 'codex' or 'hooks' not in self.args.skip) for target in self.targets())
             for target in self.targets():
                 self.current = target
-                if self.args.target and not platforms.find_command(target):
-                    self.warn(target + ' CLI not found; installing for --target ' + self.args.target + ' anyway')
                 self.step += 1
                 self.say(f'[{self.step}/{self.total_steps}] ' + ('Claude' if target == 'claude' else 'Codex') + ': agents and skills')
                 self.sync('install')
                 if target == 'claude':
                     self.posix_integration('install')
-            self.posix_integration('extras')
+            try:
+                self.posix_integration('extras')
+            except ValueError:
+                self.say('Installation incomplete. Completed core files remain installed; review the failed integration above and rerun after fixing it.')
+                raise
             self.say('TARGET  ITEM  STATUS')
             for row in self.rows:
                 self.say('  '.join(row))
-            self.say('Done. Run agentkit doctor to check the setup.')
+            if os.environ.get('AGENTKIT_BOOTSTRAP_ACTIVE') != '1':
+                self.say('Done. Run agentkit doctor to check the setup.')
         elif cmd == 'update':
             if not (self.root / '.git').exists():
                 raise ValueError(str(self.root) + ' is not a git clone, cannot update')
@@ -593,31 +676,48 @@ class Lifecycle:
                 proc = platforms.run(['git', '-C', str(self.root), 'status', '--porcelain'], capture_output=True, text=True, check=True)
                 if proc.stdout.strip():
                     raise ValueError('local changes: update refused; inspect git status')
+                branch = platforms.run(['git', '-C', str(self.root), 'symbolic-ref', '--quiet', '--short', 'HEAD'],
+                                       capture_output=True, text=True)
+                if branch.returncode or branch.stdout.strip() != 'main':
+                    raise ValueError('update requires the main branch; switch this checkout to main, then retry')
+                self.say('[1/2] Downloading updates from origin/main ...')
                 try:
-                    platforms.run(['git', '-C', str(self.root), 'pull', '--ff-only'], check=True)
-                except subprocess.CalledProcessError:
+                    # Override the clone's broad fetch refspec and disable tag
+                    # auto-following. Never fetch release/development branches.
+                    platforms.run(['git', '-C', str(self.root), 'fetch', '--no-tags', '--no-recurse-submodules',
+                                   'origin', 'refs/heads/main:refs/remotes/origin/main'],
+                                  capture_output=True, text=True, check=True)
+                    platforms.run(['git', '-C', str(self.root), 'merge', '--ff-only', '--no-stat',
+                                   'refs/remotes/origin/main'], capture_output=True, text=True, check=True)
+                except subprocess.CalledProcessError as error:
                     if self.args.quiet:
                         for home in self.homes.values():
                             if (home / 'agentkit').is_dir():
                                 atomic_write(home / 'agentkit/update-status', b'agentkit: auto-update failed, see update.log\n')
-                    raise ValueError('git pull --ff-only failed. Fix it by hand: cd ' + str(self.root) + ' && git status')
+                    raise ValueError('origin/main update failed: ' +
+                                     (error.stderr or error.stdout or 'Git failed').strip() +
+                                     '. Fix it by hand: cd ' + str(self.root) + ' && git status')
             else:
-                self.say('[dry-run] git pull --ff-only')
+                self.say('[dry-run] fetch only origin/main (no tags), then fast-forward main')
             self.version = (self.root / 'VERSION').read_text(encoding='utf-8').strip()
+            self.say('[2/2] Applying agentkit ' + self.version + ' ...')
             for target in self.targets():
                 self.current = target
                 if not (self.target / 'agentkit/manifest.json').exists():
                     raise ValueError('agentkit is not installed in ' + str(self.target))
-                self.say(target + ': ' + str(self.target))
+                self.say('  Updating ' + target + ' ...')
                 self.sync('update')
                 if target == 'claude':
                     self.posix_integration('update')
+            self.say('Update complete: agentkit ' + self.version)
+        elif cmd == 'models':
+            models.commit(self, models.configure(self))
         elif cmd == 'doctor':
             return self.doctor()
         elif cmd == 'uninstall':
             self.uninstall()
         else:
-            raise ValueError(cmd + ' is unsupported on native Windows; use install/update/doctor/uninstall or WSL for POSIX integrations')
+            raise ValueError(cmd + ' is unsupported on native Windows; use install/update/models/doctor/uninstall or WSL for POSIX integrations')
         if platforms.is_windows() and cmd in ('install', 'update'):
             self.say('Native Windows: gstack, karpathy plugin, Bash hooks and auto-update integrations are not installed.')
         return 0
@@ -636,7 +736,16 @@ def main(argv=None) -> int:
             value = argv[i + 1] if arg == '--target' and i + 1 < len(argv) else arg.split('=', 1)[1] if arg.startswith('--target=') else None
             if value is not None and value not in ('claude', 'codex', 'both'):
                 raise ValueError("--target: unknown value '" + value + "' (claude|codex|both)")
-        return Lifecycle(parser().parse_args(argv)).execute()
-    except (ValueError, OSError, codex.Fail, subprocess.CalledProcessError) as exc:
+        lifecycle = Lifecycle(parser().parse_args(argv))
+        return lifecycle.execute()
+    except KeyboardInterrupt:
+        print('error: installation interrupted by the user; completed steps may remain. Review the installation and rerun when ready.', file=sys.stderr)
+        return 130
+    except (ValueError, OSError, EOFError, codex.Fail, subprocess.SubprocessError) as exc:
         print('error: ' + str(exc), file=sys.stderr)
+        if 'lifecycle' in locals() and lifecycle.args.command == 'install':
+            print('Installation incomplete. Completed/skipped stages:', file=sys.stderr)
+            for row in lifecycle.rows:
+                print('  ' + '  '.join(row), file=sys.stderr)
+            print('  failed: ' + str(exc), file=sys.stderr)
         return 1

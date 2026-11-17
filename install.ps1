@@ -4,6 +4,8 @@ $ErrorActionPreference = 'Stop'
 $forward = @($args)
 $yes = ($forward -contains '--yes') -or ($forward -contains '-y')
 $dry = $forward -contains '--dry-run'
+$quiet = $forward -contains '--quiet'
+function Write-Step([string]$message) { if (-not $quiet) { Write-Host $message } }
 function Confirm-Change([string]$message) {
     if ($yes) { return $true }
     if ([Console]::IsInputRedirected) { return $false }
@@ -20,6 +22,7 @@ function Assert-NoReparse([string]$path) {
     }
 }
 try {
+    Write-Step 'Checking Python and Git prerequisites ...'
     $python = $null
     $pythonPrefix = @()
     foreach ($candidate in @('python.exe', 'python3.exe', 'py.exe')) {
@@ -50,17 +53,26 @@ try {
     if (Test-Path -LiteralPath $destination) {
         if (-not (Test-Path -LiteralPath (Join-Path $destination '.git'))) { throw "$destination exists and is not a Git checkout." }
         if (-not (Test-Path -LiteralPath (Join-Path $destination 'lib/agentkit.py'))) { throw "$destination does not contain the native agentkit entry point." }
-        Write-Host "Using checkout: $destination"
+        Write-Step "Using checkout: $destination"
     } elseif ($dry) {
         Write-Host "[dry-run] Would clone $repo into $destination and run agentkit install. No files written."
         exit 0
     } else {
         if (-not (Confirm-Change "Clone agentkit into $destination?")) { throw 'Clone declined. Use --yes to accept in a noninteractive terminal.' }
-        & $git.Source clone --no-hardlinks -- $repo $destination
-        if ($LASTEXITCODE -ne 0) { throw 'Git clone failed.' }
+        Write-Step "Downloading agentkit into $destination ..."
+        if ($quiet) { & $git.Source clone --quiet --no-hardlinks -- $repo $destination }
+        else { & $git.Source clone --progress --no-hardlinks -- $repo $destination }
+        if ($LASTEXITCODE -ne 0) { throw "Downloading agentkit failed (exit $LASTEXITCODE). Review Git output, check repository/network access and destination permissions, then retry." }
+        Write-Step 'Downloading agentkit: complete'
     }
     $entry = Join-Path $destination 'lib/agentkit.py'
     if (-not (Test-Path -LiteralPath $entry)) { throw 'Native agentkit entry point not found.' }
+    $env:AGENTKIT_HOME = $destination
+    $previousBootstrap = $env:AGENTKIT_BOOTSTRAP_ACTIVE
+    $env:AGENTKIT_BOOTSTRAP_ACTIVE = '1'
+    try { & $python @pythonPrefix -I $entry install @forward; $result = $LASTEXITCODE }
+    finally { $env:AGENTKIT_BOOTSTRAP_ACTIVE = $previousBootstrap }
+    if ($result -ne 0) { exit $result }
     $launcher = Join-Path $userHome '.local/bin/agentkit.cmd'
     Assert-NoReparse $launcher
     # The core owns the launcher template and uses these exact bytes for safe purge.
@@ -84,12 +96,10 @@ try {
             [IO.File]::WriteAllBytes($launcher, $launcherBytes)
         } else { Write-Warning "Launcher unchanged. Invoke the core at $entry directly." }
     }
-    $env:AGENTKIT_HOME = $destination
-    & $python @pythonPrefix -I $entry install @forward
-    $result = $LASTEXITCODE
-    Write-Host "Add $([IO.Path]::GetDirectoryName($launcher)) to your user PATH if needed. No PATH or execution policy setting was changed."
+    Write-Step "Add $([IO.Path]::GetDirectoryName($launcher)) to your user PATH if needed. No PATH or execution policy setting was changed."
+    Write-Step 'Done. Run agentkit doctor to check the setup.'
     exit $result
 } catch {
-    Write-Error $_
+    Write-Error ('Installation incomplete: ' + $_.Exception.Message)
     exit 1
 }

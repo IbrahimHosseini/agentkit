@@ -44,3 +44,16 @@ def launcher_bytes(entry: Path) -> bytes:
     code = ("import base64,runpy,sys;sys.argv[0]=base64.b64decode('" + encoded +
             "').decode('utf-8');runpy.run_path(sys.argv[0],run_name='__main__')")
     return template.replace('"%~dp0..\\lib\\agentkit.py"', '-c "' + code + '"').encode('ascii')
+
+
+def command_error(name: str) -> Optional[str]:
+    """Validate that a discovered target actually starts, with bounded output."""
+    if not find_command(name):
+        return 'command not found in PATH'
+    try:
+        result = run([name, '--version'], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return str(error)
+    if result.returncode:
+        return f'--version failed (exit {result.returncode}): ' + (result.stderr or result.stdout).strip()
+    return None
