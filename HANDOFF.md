@@ -8,7 +8,11 @@ Codex model discovery uses bounded app-server `model/list`, not inference. Claud
 
 ## Release status
 
-Version `0.4.0` is prepared in `VERSION`, plugin metadata and the changelog. The release includes the installer improvements from `001e3f0` and per-agent model selection. Release branch: `codex/release-0.4.0`. The branch will include current `origin/main` (`0951981`) before push. Publication remains pending the user's merge of the version PR and verification of merged-main CI; no release tag has been created.
+Version `0.4.0` is prepared in `VERSION`, plugin metadata and the changelog. The release includes the installer improvements from `001e3f0` and per-agent model selection. Release branch: `codex/release-0.4.0`. The branch includes `origin/main` (`0951981`) and is pushed in PR #8: https://github.com/IbrahimHosseini/agentkit/pull/8. Publication remains pending the user's merge of the version PR and verification of merged-main CI; no release tag has been created.
+
+## Windows CI follow-up
+
+The first release CI passed Linux and macOS, but Windows revealed two backup-path assertion failures (POSIX separators in test filtering) and stalled at the first native lifecycle installation. The duplicate runs were cancelled for diagnosis. The follow-up fixes backup filtering using path components and prevents reopening CONIN$ when Windows stdin is redirected. Interactive Windows stdin remains supported. Two regression tests cover both terminal cases; CI now prints test names and bounds native steps to 20 minutes. Local validation passed after the fix: all 111 Python tests (seven skipped), the 20 desktop and 32 model tests, validate.sh and diff checks. Updated CI results are pending.
 
 ## Verification
 

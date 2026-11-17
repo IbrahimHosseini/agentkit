@@ -149,8 +149,13 @@ def terminal():
     if sys.stdin.isatty():
         yield sys.stdin
         return
+    # On Windows a redirected stdin can still have a readable CONIN$ handle
+    # with no human to answer it (including CI). Do not reopen that console.
+    if platforms.is_windows():
+        yield None
+        return
     try:
-        stream = open('CONIN$' if platforms.is_windows() else '/dev/tty', 'r')
+        stream = open('/dev/tty', 'r')
     except OSError:
         yield None
         return

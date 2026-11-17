@@ -118,6 +118,22 @@ class DesktopTests(unittest.TestCase):
             lifecycle.desktop_installations()
             install.assert_not_called()
 
+    def test_windows_redirected_input_does_not_reopen_console(self):
+        with mock.patch.object(platforms, 'is_windows', return_value=True), \
+             mock.patch('sys.stdin.isatty', return_value=False), \
+             mock.patch('builtins.open') as opened:
+            with desktop.terminal() as stream:
+                self.assertIsNone(stream)
+            opened.assert_not_called()
+
+    def test_windows_interactive_input_keeps_console(self):
+        with mock.patch.object(platforms, 'is_windows', return_value=True), \
+             mock.patch('sys.stdin.isatty', return_value=True), \
+             mock.patch('builtins.open') as opened:
+            with desktop.terminal() as stream:
+                self.assertIs(stream, sys.stdin)
+            opened.assert_not_called()
+
     def test_dry_run_never_downloads_or_prompts(self):
         lifecycle = self.lifecycle(['--target', 'claude', '--dry-run'])
         with mock.patch.object(desktop, 'support', return_value=''), mock.patch.object(desktop, 'answer') as answer, mock.patch.object(desktop, 'install') as install:

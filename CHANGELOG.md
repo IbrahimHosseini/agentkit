@@ -22,6 +22,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - README icon rendering now uses a local PNG asset.
+- Noninteractive Windows installs skip optional desktop prompts instead of reopening a console that may wait indefinitely for input.
 
 ## [0.3.1] - 2026-11-14
 

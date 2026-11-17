@@ -289,7 +289,7 @@ class ModelTests(unittest.TestCase):
         with mock.patch.object(models, 'atomic_write', side_effect=fail_once):
             with self.assertRaisesRegex(OSError, 'simulated disk failure'):
                 models.commit(life, batch)
-        restored = {name: data for name, data in tree(self.home).items() if '/backups/' not in name}
+        restored = {name: data for name, data in tree(self.home).items() if 'backups' not in Path(name).parts}
         self.assertEqual(restored, original)
         self.assertTrue(list((life.homes['claude'] / 'agentkit/backups').rglob('backend.md')))
 
@@ -312,7 +312,7 @@ class ModelTests(unittest.TestCase):
         with mock.patch.object(models, 'atomic_write', side_effect=fail_once):
             with self.assertRaisesRegex(OSError, 'second target'):
                 models.commit(life, batch)
-        self.assertEqual({name: data for name, data in tree(self.home).items() if '/backups/' not in name}, before)
+        self.assertEqual({name: data for name, data in tree(self.home).items() if 'backups' not in Path(name).parts}, before)
 
     def test_read_only_command_entrypoint(self):
         self.seed('codex')
