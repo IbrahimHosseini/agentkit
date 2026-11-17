@@ -4,10 +4,12 @@
   <img src="assets/agentkit-icon.png" alt="agentkit cat" width="96" height="96">
 </p>
 
-[![CI](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/IbrahimHosseini/agentkit)](https://github.com/IbrahimHosseini/agentkit/releases/latest)
-[![License: MIT](https://img.shields.io/github/license/IbrahimHosseini/agentkit)](LICENSE)
-![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
+<p align="center">
+  <a href="https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml"><img src="https://github.com/IbrahimHosseini/agentkit/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/IbrahimHosseini/agentkit/releases/latest"><img src="https://img.shields.io/github/v/release/IbrahimHosseini/agentkit" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/IbrahimHosseini/agentkit" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platforms">
+</p>
 
 agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 16 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes on POSIX systems. One command installs it. One command updates it.
 
