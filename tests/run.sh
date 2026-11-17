@@ -430,7 +430,7 @@ t_update_not_fast_forward() {
   before="$(snap "$CLAUDE")"
   run "$AK" update
   assert_rc_nz "update with diverged history"
-  assert_contains "git pull --ff-only failed"
+  assert_contains "origin/main update failed"
   assert_contains "cd $AKH && git status"
   assert_eq "$(snap "$CLAUDE")" "$before" "failed update changed files"
   assert_eq "$(git -C "$AKH" log -1 --format=%s)" "local commit" "local commit kept"
@@ -1531,14 +1531,14 @@ t_output_markers_and_table() {
     printf -- "---\nname: newagent\ndescription: x\ntools: Read\nmodel: sonnet\n---\nbody\n" > agents/newagent.md'
   run "$AK" update
   assert_rc 0 "update"
-  assert_contains "  + agents/frontend.md (updated)"
-  assert_contains "  + agents/newagent.md"
-  assert_contains "  + agents/seo.md (removed upstream)"
+  assert_not_contains "  + agents/frontend.md (updated)"
+  assert_not_contains "  + agents/newagent.md"
+  assert_not_contains "  + agents/seo.md (removed upstream)"
   assert_contains "  ! kept your edited agents/backend.md; new version in agents/backend.md.agentkit-new"
   assert_not_contains "agents/debugger.md"
   run "$AK" update --force
   assert_rc 0 "update --force"
-  assert_contains "  + agents/backend.md (replaced)"
+  assert_not_contains "  + agents/backend.md (replaced)"
 }
 
 # ------------------------------------------------------------------ target detection
@@ -1573,8 +1573,8 @@ t_target_default_detection() {
   assert_contains "target codex: $CODEX"
   run "$AK" update
   assert_rc 0 "update with both targets"
-  assert_contains "claude: $CLAUDE"
-  assert_contains "codex: $CODEX"
+  assert_contains "Updating claude"
+  assert_contains "Updating codex"
   # --target narrows it.
   run "$AK" doctor --target codex
   assert_contains "target codex: $CODEX"
@@ -2032,11 +2032,11 @@ t_codex_update_prunes() {
     echo "upstream snippet line" >> templates/AGENTS.md.snippet'
   run "$AK" update
   assert_rc 0 "update"
-  assert_contains "$CODEX"
+  assert_contains "Updating codex"
   assert_not_contains "$CLAUDE"
-  assert_contains "  + agents/frontend.toml (updated)"
-  assert_contains "  + agents/newagent.toml"
-  assert_contains "  + agents/seo.toml (removed upstream)"
+  assert_not_contains "  + agents/frontend.toml (updated)"
+  assert_not_contains "  + agents/newagent.toml"
+  assert_not_contains "  + agents/seo.toml (removed upstream)"
   assert_contains "  ! kept your edited agents/backend.toml"
   assert_grep "$CODEX/agents/frontend.toml" "<!-- upstream -->"
   assert_file "$CODEX/agents/newagent.toml"
@@ -2057,7 +2057,7 @@ t_codex_update_prunes() {
   assert_contains "0 added, 0 updated"
   assert_not_contains "(removed upstream)"
   assert_not_contains "(updated)"
-  assert_contains "config.toml: block already up to date"
+  assert_not_contains "config.toml: block already up to date"
 }
 
 t_codex_update_user_removed_block_stays() {

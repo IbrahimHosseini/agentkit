@@ -70,6 +70,10 @@ class Lifecycle:
         if not self.args.quiet:
             print(text, flush=True)
 
+    def detail(self, text: str) -> None:
+        if self.args.command != 'update' or self.args.dry_run:
+            self.say(text)
+
     def warn(self, text: str) -> None:
         print('warning: ' + text, file=sys.stderr)
 
@@ -220,7 +224,7 @@ class Lifecycle:
         status = self.helper(args)
         if status in ('none', 'unchanged'):
             if status == 'unchanged':
-                self.say('  = ' + path.name + ': block already up to date')
+                self.detail('  = ' + path.name + ': block already up to date')
                 self.rows.append((self.current, path.name, 'unchanged'))
             return
         if mode == 'install' and '# Multi-agent workflow' in (integrations.rd(str(path)) or '').replace(START, '') and START not in (integrations.rd(str(path)) or ''):
@@ -233,7 +237,7 @@ class Lifecycle:
         self.backup(path)
         args[-1] = 'write'
         self.helper(args)
-        self.say('  + ' + path.name + ': ' + ('removed agentkit block' if mode == 'uninstall' else status + ' block'))
+        self.detail('  + ' + path.name + ': ' + ('removed agentkit block' if mode == 'uninstall' else status + ' block'))
         self.rows.append((self.current, path.name, status))
 
     def sources(self, temporary: Path, old: dict) -> tuple:
@@ -330,7 +334,7 @@ class Lifecycle:
         old = load_manifest(manifest)
         new = {}
         added = updated = same = forced = removed = 0
-        self.say('agentkit ' + self.version + ': installing into ' + str(self.target))
+        self.detail('agentkit ' + self.version + ': installing into ' + str(self.target))
         with tempfile.TemporaryDirectory(prefix='agentkit-render-') as work:
             files, block = self.sources(Path(work), old)
             for rel, src in files.items():
@@ -377,7 +381,7 @@ class Lifecycle:
                     updated += 1
                     label = ' (updated)'
                 if not exists or current_hash != sha or replace_link:
-                    self.say('  + ' + rel + label)
+                    self.detail('  + ' + rel + label)
                 if not self.args.dry_run:
                     if dest.is_symlink():
                         dest.unlink()
@@ -394,7 +398,7 @@ class Lifecycle:
                     if not self.args.dry_run:
                         dest.unlink()
                     removed += 1
-                    self.say('  + ' + rel + ' (removed upstream)')
+                    self.detail('  + ' + rel + ' (removed upstream)')
                 elif dest.exists():
                     self.say('kept ' + rel + ' (removed upstream, but you edited it)')
             self.say(('  + ' if added + updated + forced + removed else '  = ') + f'Files: {added} added, {updated} updated, {same} unchanged, {forced} replaced (--force), {removed} removed upstream')
@@ -411,7 +415,7 @@ class Lifecycle:
                     with contextlib.redirect_stdout(status):
                         codex.config_put(str(cfg), str(block), 'check')
                     if status.getvalue().strip() == 'unchanged':
-                        self.say('  = config.toml: block already up to date')
+                        self.detail('  = config.toml: block already up to date')
                         self.rows.append((self.current, 'config.toml', 'unchanged'))
                     if status.getvalue().strip() != 'unchanged':
                         if self.args.dry_run:
@@ -672,25 +676,40 @@ class Lifecycle:
                 proc = platforms.run(['git', '-C', str(self.root), 'status', '--porcelain'], capture_output=True, text=True, check=True)
                 if proc.stdout.strip():
                     raise ValueError('local changes: update refused; inspect git status')
+                branch = platforms.run(['git', '-C', str(self.root), 'symbolic-ref', '--quiet', '--short', 'HEAD'],
+                                       capture_output=True, text=True)
+                if branch.returncode or branch.stdout.strip() != 'main':
+                    raise ValueError('update requires the main branch; switch this checkout to main, then retry')
+                self.say('[1/2] Downloading updates from origin/main ...')
                 try:
-                    platforms.run(['git', '-C', str(self.root), 'pull', '--ff-only'], check=True)
-                except subprocess.CalledProcessError:
+                    # Override the clone's broad fetch refspec and disable tag
+                    # auto-following. Never fetch release/development branches.
+                    platforms.run(['git', '-C', str(self.root), 'fetch', '--no-tags', '--no-recurse-submodules',
+                                   'origin', 'refs/heads/main:refs/remotes/origin/main'],
+                                  capture_output=True, text=True, check=True)
+                    platforms.run(['git', '-C', str(self.root), 'merge', '--ff-only', '--no-stat',
+                                   'refs/remotes/origin/main'], capture_output=True, text=True, check=True)
+                except subprocess.CalledProcessError as error:
                     if self.args.quiet:
                         for home in self.homes.values():
                             if (home / 'agentkit').is_dir():
                                 atomic_write(home / 'agentkit/update-status', b'agentkit: auto-update failed, see update.log\n')
-                    raise ValueError('git pull --ff-only failed. Fix it by hand: cd ' + str(self.root) + ' && git status')
+                    raise ValueError('origin/main update failed: ' +
+                                     (error.stderr or error.stdout or 'Git failed').strip() +
+                                     '. Fix it by hand: cd ' + str(self.root) + ' && git status')
             else:
-                self.say('[dry-run] git pull --ff-only')
+                self.say('[dry-run] fetch only origin/main (no tags), then fast-forward main')
             self.version = (self.root / 'VERSION').read_text(encoding='utf-8').strip()
+            self.say('[2/2] Applying agentkit ' + self.version + ' ...')
             for target in self.targets():
                 self.current = target
                 if not (self.target / 'agentkit/manifest.json').exists():
                     raise ValueError('agentkit is not installed in ' + str(self.target))
-                self.say(target + ': ' + str(self.target))
+                self.say('  Updating ' + target + ' ...')
                 self.sync('update')
                 if target == 'claude':
                     self.posix_integration('update')
+            self.say('Update complete: agentkit ' + self.version)
         elif cmd == 'models':
             models.commit(self, models.configure(self))
         elif cmd == 'doctor':

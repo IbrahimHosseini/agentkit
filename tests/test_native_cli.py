@@ -104,6 +104,33 @@ class NativeLifecycleTests(unittest.TestCase):
         self.git_run('commit', '-qm', 'upstream change', cwd=publisher)
         self.git_run('push', '-q', 'origin', 'HEAD:main', cwd=publisher)
 
+    def test_update_fetches_only_main_without_tags_or_file_details(self):
+        self.install()
+        self.publish_agent_change()
+        self.git_run('push', '-q', 'origin', 'main:refs/heads/unrelated', cwd=self.repo)
+        self.git_run('update-ref', '-d', 'refs/remotes/origin/unrelated', cwd=self.repo)
+        self.git_run('tag', 'unrelated-tag', cwd=self.repo)
+        self.git_run('push', '-q', 'origin', 'refs/tags/unrelated-tag', cwd=self.repo)
+        self.git_run('tag', '-d', 'unrelated-tag', cwd=self.repo)
+        result = self.cli('update')
+        self.assertIn('Downloading updates from origin/main', result.stdout)
+        self.assertIn('Update complete', result.stdout)
+        for detail in ('Fast-forward', 'remote:', 'agents/backend.toml', 'files changed', 'create mode'):
+            self.assertNotIn(detail, result.stdout)
+        refs = self.git_run('for-each-ref', '--format=%(refname)', cwd=self.repo).stdout
+        self.assertNotIn('refs/remotes/origin/unrelated', refs)
+        self.assertNotIn('refs/tags/unrelated-tag', refs)
+        self.assertIn(b'Offline upstream update.', (self.codex / 'agents/backend.toml').read_bytes())
+
+    def test_update_refuses_development_branch(self):
+        self.install()
+        self.git_run('checkout', '-qb', 'development', cwd=self.repo)
+        before = tree_bytes(self.codex)
+        result = self.cli('update', expected=1)
+        self.assertIn('requires the main branch', result.stdout)
+        self.assertEqual(tree_bytes(self.codex), before)
+        self.assertEqual(self.git_run('branch', '--show-current', cwd=self.repo).stdout.strip(), 'development')
+
     def test_help_and_version(self):
         self.assertIn('install', self.cli('help').stdout)
         self.assertIn((self.repo / 'VERSION').read_text().strip(), self.cli('version').stdout)
