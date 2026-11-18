@@ -90,8 +90,48 @@ class DesktopTests(unittest.TestCase):
 
     def test_unsupported_linux_distribution(self):
         with mock.patch.object(desktop.sys, 'platform', 'linux'), mock.patch.object(platforms, 'is_windows', return_value=False), mock.patch.object(desktop.platform, 'machine', return_value='x86_64'), mock.patch.object(desktop, 'os_release', return_value={'ID': 'alpine', 'VERSION_ID': '3.22'}):
-            self.assertIn('not officially supported', desktop.support('claude'))
             self.assertIn('not officially supported', desktop.support('codex'))
+
+    def test_claude_linux_desktop_is_disabled_independent_of_distribution_and_architecture(self):
+        for arch in ('x86_64', 'aarch64', 'riscv64'):
+            for release in ({'ID': 'ubuntu', 'VERSION_ID': '24.04'},
+                            {'ID': 'debian', 'VERSION_ID': '13'},
+                            {'ID': 'future-linux', 'VERSION_ID': '99'}):
+                with self.subTest(arch=arch, release=release), \
+                     mock.patch.object(desktop.sys, 'platform', 'linux'), \
+                     mock.patch.object(platforms, 'is_windows', return_value=False), \
+                     mock.patch.object(desktop.platform, 'machine', return_value=arch), \
+                     mock.patch.object(desktop, 'os_release', return_value=release) as os_release:
+                    self.assertEqual(desktop.support('claude'), 'Claude Desktop installation is disabled on Linux; Claude Code CLI is required')
+                    os_release.assert_not_called()
+
+    def test_claude_linux_install_has_no_external_or_interactive_effects(self):
+        with mock.patch.object(desktop.sys, 'platform', 'linux'), \
+             mock.patch.object(platforms, 'is_windows', return_value=False), \
+             mock.patch.object(desktop.platform, 'machine', return_value='x86_64'), \
+             mock.patch.object(desktop, 'os_release', return_value={'ID': 'ubuntu', 'VERSION_ID': '24.04'}), \
+             mock.patch.object(desktop, 'download') as download, \
+             mock.patch.object(desktop, 'command') as command, \
+             mock.patch.object(desktop.webbrowser, 'open') as browser, \
+             mock.patch.object(desktop, 'answer') as answer, \
+             mock.patch.object(desktop, 'discover') as discover:
+            with self.assertRaisesRegex(ValueError, 'disabled on Linux'):
+                desktop.install('claude', lambda _: None)
+            for effect in (download, command, browser, answer, discover):
+                effect.assert_not_called()
+
+    def test_desktop_support_preserves_other_platforms_and_codex_linux(self):
+        cases = [('darwin', False, 'arm64', {}, 'claude'),
+                 ('win32', True, 'x86_64', {}, 'claude'),
+                 ('linux', False, 'x86_64', {'ID': 'ubuntu', 'VERSION_ID': '24.04'}, 'codex'),
+                 ('linux', False, 'aarch64', {'ID': 'arch'}, 'codex')]
+        for system, windows, arch, release, target in cases:
+            with self.subTest(system=system, target=target, release=release), \
+                 mock.patch.object(desktop.sys, 'platform', system), \
+                 mock.patch.object(platforms, 'is_windows', return_value=windows), \
+                 mock.patch.object(desktop.platform, 'machine', return_value=arch), \
+                 mock.patch.object(desktop, 'os_release', return_value=release):
+                self.assertEqual(desktop.support(target), '')
 
     def lifecycle(self, args):
         with mock.patch.object(desktop, 'discover', return_value={}):
@@ -110,6 +150,28 @@ class DesktopTests(unittest.TestCase):
             lifecycle.desktop_installations()
             install.assert_not_called()
         self.assertEqual(lifecycle.rows[-1], ('codex', 'desktop', 'skipped'))
+
+    def test_claude_linux_and_wsl_lifecycle_never_offers_desktop(self):
+        for wsl in (False, True):
+            for flags in ([], ['--yes'], ['--dry-run']):
+                with self.subTest(wsl=wsl, flags=flags), \
+                     mock.patch.dict(os.environ, {'WSL_DISTRO_NAME': 'Ubuntu' if wsl else '', 'WSL_INTEROP': '/run/WSL/interop' if wsl else ''}), \
+                     mock.patch.object(desktop.sys, 'platform', 'linux'), \
+                     mock.patch.object(platforms, 'is_windows', return_value=False), \
+                     mock.patch.object(desktop.platform, 'machine', return_value='x86_64'), \
+                     mock.patch.object(desktop, 'os_release', return_value={'ID': 'ubuntu', 'VERSION_ID': '24.04'}), \
+                     mock.patch.object(desktop, 'terminal') as terminal, \
+                     mock.patch.object(desktop, 'answer') as answer, \
+                     mock.patch.object(desktop, 'install') as install, \
+                     mock.patch.object(desktop, 'download') as download, \
+                     mock.patch.object(desktop, 'command') as command, \
+                     mock.patch.object(desktop.webbrowser, 'open') as browser:
+                    lifecycle = self.lifecycle(['--target', 'claude'] + flags)
+                    with contextlib.redirect_stdout(io.StringIO()) as output:
+                        lifecycle.desktop_installations()
+                    for effect in (terminal, answer, install, download, command, browser):
+                        effect.assert_not_called()
+                    self.assertNotIn('Would offer', output.getvalue())
 
     def test_noninteractive_skips_desktop(self):
         lifecycle = self.lifecycle(['--target', 'claude', '--yes'])

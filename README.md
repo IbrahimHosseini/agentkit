@@ -135,11 +135,11 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 
 The script clones the repo to `~/.agentkit`, then runs `agentkit install`. After that installation succeeds, it links the CLI to `~/.local/bin/agentkit`. Each change to your settings asks for a yes first.
 
-The installer checks desktop apps separately from CLIs. On macOS, it checks system and user Applications folders. On Windows and Linux, it checks supported installation records and application locations. It recognizes Claude, the older Codex app, and the new ChatGPT app that contains Codex. ChatGPT Classic does not count as Codex.
+The installer checks desktop apps separately from CLIs. On macOS, it checks system and user Applications folders. On Windows, it checks supported installation records and application locations. On Linux, existing Claude Desktop detection is informational; installation requires Claude Code CLI. It recognizes Claude, the older Codex app, and the new ChatGPT app that contains Codex. ChatGPT Classic does not count as Codex.
 
 Desktop installation is optional. It needs a separate interactive confirmation, even with `--yes`. The installer uses official downloads for supported systems and architectures. When automatic installation is unavailable, complete the official installer, then let agentkit check the result. Opening an installer does not mean installation succeeded.
 
-On macOS, automatic installation checks the downloaded app signature and installs into `~/Applications`. Existing apps are not replaced. Linux support depends on the distribution and version. The installer explains unsupported combinations. See the official [Claude download page](https://claude.com/download) and [ChatGPT with Codex download page](https://chatgpt.com/download/) for current availability.
+On macOS, automatic installation checks the downloaded app signature and installs into `~/Applications`. Existing apps are not replaced. On Linux, agentkit never offers or installs Claude Desktop and always requires Claude Code CLI. Other desktop support depends on the distribution and version; the installer explains unsupported combinations. See the official [Claude download page](https://claude.com/download) and [ChatGPT with Codex download page](https://chatgpt.com/download/) for current availability.
 
 If you accept gstack installation, agentkit installs and checks Bun before gstack setup. A failed Bun installation stops that installation. Use `--skip gstack` if you do not want gstack or Bun.
 
@@ -231,7 +231,7 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 `--target` sets which CLI gets the install.
 
 - Without `--target`, `install` selects Claude, Codex, or both from the desktop apps and CLIs it finds. Each selected target requires its CLI.
-- `update`, `models`, `uninstall` and `doctor` use every target that is already installed.
+- `update`, `uninstall` and `doctor` use every target that is already installed. Interactive `models` asks which installed target to configure first.
 - With `--target claude`, files go to `~/.claude` (or `CLAUDE_CONFIG_DIR`).
 - With `--target codex`, files go to `~/.codex` (or `CODEX_HOME`).
 - `--target both` does both.
@@ -240,7 +240,9 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 
 ### Models and effort
 
-After required prerequisites are ready, interactive installation displays each agent's model and effort and asks:
+Interactive `agentkit models` first offers Claude, Codex, both, or cancel when both targets are installed. A single installed target is selected automatically; `--target` selects it explicitly. Selection happens before reading target preferences or fetching catalogs. During installation, the model picker offers only the installation targets already selected; choosing a model target does not change what gets installed.
+
+After target selection, the picker displays each agent's model and effort and asks:
 
 ```text
 Do you want to change these models or effort levels? [y/N]
@@ -261,11 +263,17 @@ agentkit models --dry-run
 
 `--agent` limits the picker to one agent. `--project` is Claude-only. Without a terminal, or with `--yes`, settings are displayed and kept; no catalog request or selection prompt runs. `--dry-run` previews selections without saving. `--quiet` still displays the interactive choices and confirmation. Start a new Claude Code or Codex session after changing agent files.
 
-Codex queries its current provider through the official app-server `model/list` interface, with a ten-second discovery deadline and no inference request. If discovery fails, it uses a bundled fallback derived from the project's defaults. Only the known effort from that mapping is offered offline. Claude uses the known `opus`, `sonnet` and `haiku` aliases; use `/model` inside Claude Code to check account availability. Both pickers support manually entered IDs. A listed model is **not a guarantee of access**: login, an eligible subscription or API credits may be required, depending on the provider. This command does not switch providers, sign in or purchase access.
+Codex queries its current provider through the official app-server `model/list` interface. Visible models appear first; `a` refetches all models and labels hidden entries. Claude uses the official Claude Agent SDK's initialization and `supportedModels()` metadata with the installed Claude Code CLI and existing login. Discovery has a ten-second deadline, sends no user messages and requests no inference. Model names, IDs and advertised effort levels appear together; missing capabilities inherit CLI effort. Safe new effort names from live catalogs survive saving and updates.
+
+Live Claude discovery requires an existing Node.js (18.14+) and npm. Agentkit never installs Node. On the first interactive request, npm installs the pinned SDK and locked dependencies only in the selected target's `agentkit/runtime/claude-catalog`, with install scripts and optional binaries disabled. The existing CLI supplies the executable; nothing is installed globally. `--dry-run` uses the local Claude fallback and never sets up that runtime. No runtime setup runs with `--yes` or without a terminal. The helper disables session persistence, user/project settings, ordinary hooks, MCP servers, tools and cloud skill/plugin syncing while preserving login. Organization-managed policy and hooks can still apply.
+
+Failures report a safe reason and next action, then use a clearly labeled local, unverified fallback. Codex fallback efforts come only from the bundled mapping; Claude fallback aliases are `opus`, `sonnet` and `haiku`. Both pickers support manually entered IDs. A listed model is **not a guarantee of access**: login, an eligible subscription or API credits may be required, depending on the provider. This command does not switch providers, sign in or purchase access.
 
 Choices are saved per target in `agentkit/model-overrides.json` (under `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or the project's `.claude` directory). That file stores model IDs and effort, never credentials. Updates apply saved choices over the latest agent instructions. Restore-default removes an agent's override so future upstream defaults apply again. Ordinary uninstall retains these preferences with other state; `uninstall --purge` removes them.
 
-The picker skips unmanaged, manually edited, missing installed, or linked agent files, even with an install's `--force`; it does not save an unapplied choice. The normal installer retains its existing `--force` behavior. Selected files, preferences and manifest hashes are validated and backed up before saving. A failed save attempts to restore the entire selection, including changes across both targets, and reports backup paths if recovery fails.
+The picker skips unmanaged, manually edited, missing installed, or linked agent files, even with an install's `--force`; it does not save an unapplied choice. The normal installer retains its existing `--force` behavior. Only the selected target preferences, manifest and agent files are read and changed after selection. Selected files, preferences and manifest hashes are validated and backed up before saving. A failed save attempts to restore the entire selection, including changes across both targets, and reports backup paths if recovery fails.
+
+Catalog tests use fake CLIs and a fake SDK. Real authenticated Claude/Codex catalog discovery, native Windows helper execution and WSL2 remain unverified.
 
 ### What install changes
 

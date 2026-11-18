@@ -1,3 +1,25 @@
+# Current work: prepare agentkit 0.5.0
+
+The user authorized committing, pushing, opening a PR, and publishing a tagged release on 2026-11-18. Release branch `codex/release-0.5.0` starts from `origin/main` at `dc29d80`; implementation commit `4d4cbb1` carries only this task's reviewed changes. The unrelated open PR #9 stays on its original branch. Version and plugin metadata are `0.5.0`, with dated changelog notes and SDK attribution. Follow CONTRIBUTING.md: wait for the user to merge the release PR, verify the merged main commit and CI, then tag and publish. No release tag has been created yet.
+
+Release-branch verification: `bash scripts/validate.sh` passed (shellcheck unavailable); the full Python suite passed 135 tests with eight skips in 61.036 seconds; the Node helper contract and `git diff --check` passed. The Python count excludes the unrelated PR #9 test. The shell suite passed 84 cases with zero failures and one known trailing-newline XFAIL (85 total), using direct Xcode Git in PATH. Historical implementation results below refer to the earlier base.
+
+---
+
+# Implementation: target-scoped live model catalogs and Linux Claude policy
+
+Work date: 2026-11-18. Implementation base HEAD: `420b90339dae1352206abca9ea534da4750b1868`. User approved model targeting and official Claude SDK discovery. Publication is now authorized as described above; real target configuration remains unchanged.
+
+Interactive model selection chooses an installed target before gathering settings. Explicit targets bypass this prompt; installation model subsets never alter installation targets. Cancellation, EOF, noninteractive execution and `--yes` preserve choices. Codex supports visible models and an explicit Show all refetch. Both catalogs carry names, IDs, source/status, hidden flags and advertised effort metadata. Safe future effort strings are separate from the source converter's fixed schema; that converter contract is unchanged.
+
+The optional Claude helper pins `@anthropic-ai/claude-agent-sdk` 0.3.327 with its lockfile. Only the selected target's `agentkit/runtime/claude-catalog` receives dependencies (`npm ci --ignore-scripts --omit=optional`); Node is never installed. Existing Claude CLI/login are used. A suspended empty async input stream allows initialization and supportedModels without any user message or inference turn. Session persistence, filesystem settings, normal hooks, tools, MCP, and cloud skills/plugins sync are disabled. Organization-managed policy/hooks can still apply. Discovery/setup share a ten-second deadline and clean up their subprocess trees. Dry-run never sets up the helper runtime.
+
+Linux Claude Desktop installation is disabled: existing Desktop detection remains informational, Claude Code CLI is still required, and no desktop installation prompt or download guidance is offered. The focused desktop suite passed 26 tests (one skipped).
+
+Model validation uses fake CLIs and SDKs in scratch homes. The actual pinned SDK was also installed in scratch and run against a fake Claude executable: one initialize control request, no user messages or inference, and safe startup flags verified. This confirms the helper/SDK handshake without contacting an account. Real authenticated catalogs, actual authenticated CLI compatibility, native Windows helper execution and WSL2 remain unverified. Final full Python suite passed 136 tests (eight skipped, 67.284s). `bash scripts/validate.sh` passed; shellcheck is unavailable. Focused model suite passed 48 tests (2.680s), the Node helper contract passed, and `git diff --check` passed. Final shell suite passed 84 cases, zero failures and the one known trailing-newline XFAIL (85 total), using direct Xcode Git in PATH. Keep the trailing-newline XFAIL. The historical test/release notes below are not results for this change.
+
+---
+
 # Current work: prepare agentkit 0.4.0
 
 Work date: 2026-11-17 (Asia/Tehran). Installer work was committed independently during this task as `001e3f0`; those changes are preserved. The user has authorized committing, release preparation and pushing. Follow CONTRIBUTING.md: open the version PR, wait for the user to merge, then tag the merged main commit and publish the GitHub release.
