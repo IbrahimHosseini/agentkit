@@ -1,6 +1,14 @@
-# Current work: target-scoped live model catalogs and Linux Claude policy
+# Current work: prepare agentkit 0.5.0
 
-Work date: 2026-11-18. Base HEAD: `420b90339dae1352206abca9ea534da4750b1868`. User approved model targeting and official Claude SDK discovery; no commit, push or real target configuration change is authorized by this implementation task.
+The user authorized committing, pushing, opening a PR, and publishing a tagged release on 2026-11-18. Release branch `codex/release-0.5.0` starts from `origin/main` at `dc29d80`; implementation commit `4d4cbb1` carries only this task's reviewed changes. The unrelated open PR #9 stays on its original branch. Version and plugin metadata are `0.5.0`, with dated changelog notes and SDK attribution. Follow CONTRIBUTING.md: wait for the user to merge the release PR, verify the merged main commit and CI, then tag and publish. No release tag has been created yet.
+
+Release-branch verification: `bash scripts/validate.sh` passed (shellcheck unavailable); the full Python suite passed 135 tests with eight skips in 61.036 seconds; the Node helper contract and `git diff --check` passed. The Python count excludes the unrelated PR #9 test. The shell suite passed 84 cases with zero failures and one known trailing-newline XFAIL (85 total), using direct Xcode Git in PATH. Historical implementation results below refer to the earlier base.
+
+---
+
+# Implementation: target-scoped live model catalogs and Linux Claude policy
+
+Work date: 2026-11-18. Implementation base HEAD: `420b90339dae1352206abca9ea534da4750b1868`. User approved model targeting and official Claude SDK discovery. Publication is now authorized as described above; real target configuration remains unchanged.
 
 Interactive model selection chooses an installed target before gathering settings. Explicit targets bypass this prompt; installation model subsets never alter installation targets. Cancellation, EOF, noninteractive execution and `--yes` preserve choices. Codex supports visible models and an explicit Show all refetch. Both catalogs carry names, IDs, source/status, hidden flags and advertised effort metadata. Safe future effort strings are separate from the source converter's fixed schema; that converter contract is unchanged.
 

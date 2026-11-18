@@ -15,6 +15,7 @@ The vendored files are not changed. To refresh them, copy the folder again from 
 |---|---|---|---|
 | gstack (`browse`, `benchmark`, `careful`, `cso`, ...) | https://github.com/garrytan/gstack | MIT | frontend, seo, devops, database, security. On Codex, agentkit runs its `./setup --host codex` (experimental). Codex-only installs clone it to `~/gstack`. |
 | andrej-karpathy-skills (`karpathy-guidelines`) | https://github.com/forrestchang/andrej-karpathy-skills | see source | most agents |
+| Claude Agent SDK (`@anthropic-ai/claude-agent-sdk` 0.3.327) | https://github.com/anthropics/claude-agent-sdk-typescript | See the SDK package's `README.md` and Anthropic Commercial Terms. | Optional live Claude model discovery; locked dependencies are installed in the selected target's `agentkit/runtime/claude-catalog`. SDK code and bundled CLI binaries are not copied into this repository. |
 
 ## Adapted (rewritten from upstream)
 
