@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List
 
 import codex
-from . import desktop, integrations, models, platforms
+from . import desktop, integrations, models, platforms, ui
 from .managed import atomic_write, digest, linked_parent, load_manifest, remove_guarded_tree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +37,7 @@ def parser() -> argparse.ArgumentParser:
 class Lifecycle:
     def __init__(self, args: argparse.Namespace):
         self.args = args
+        self.terminal = ui.Terminal(quiet=args.quiet)
         if args.agent and args.command != 'models':
             raise ValueError('--agent is supported only by agentkit models')
         if args.command == 'models' and (args.force or args.purge or args.skip):
@@ -133,10 +134,19 @@ class Lifecycle:
     def requirements(self) -> None:
         self.install_targets = self.targets()
         self.say('Application detection:')
+        applications = []
         for target in self.homes:
             app = self.apps.get(target)
-            self.say('  ' + target + ' desktop: ' + (f'installed ({app.name}: {app.path})' if app else desktop.support(target) or 'not found'))
-            self.say('  ' + target + ' CLI: ' + (platforms.find_command(target) or 'not found'))
+            desktop_result = f'installed ({app.name}: {app.path})' if app else desktop.support(target) or 'not found'
+            cli_result = platforms.find_command(target) or 'not found'
+            if self.terminal.rich:
+                applications.extend(((target, 'Desktop', desktop_result), (target, 'CLI', cli_result)))
+            else:
+                self.say(f'  {target} desktop: {desktop_result}')
+                self.say(f'  {target} CLI: {cli_result}')
+        if applications:
+            self.terminal.table(('Target', 'Application', 'Result'), applications, self.say,
+                                target_column=0, group_by=0)
         wanted = 'both' if len(self.install_targets) == 2 else self.install_targets[0]
         if not self.args.target and not self.args.project and not self.apps and len(self.install_targets) == 1:
             wanted = 'auto'
@@ -216,7 +226,8 @@ class Lifecycle:
         path = self.instruction_path()
         if mode != 'uninstall' and self.total_steps:
             self.step += 1
-            self.say(f'[{self.step}/{self.total_steps}] ' + ('Codex: ' if self.current == 'codex' else 'Claude: ') + path.name)
+            label = self.terminal.target_label(self.current.capitalize())
+            self.say(f'[{self.step}/{self.total_steps}] {label}: {path.name}')
         snip = self.root / 'templates' / ('AGENTS.md.snippet' if self.current == 'codex' else 'CLAUDE.md.snippet')
         if mode == 'update' and START not in (path.read_text(encoding='utf-8') if path.exists() else ''):
             return
@@ -334,6 +345,14 @@ class Lifecycle:
         old = load_manifest(manifest)
         new = {}
         added = updated = same = forced = removed = 0
+        file_rows = []
+
+        def file_detail(rel, status, plain):
+            if self.terminal.rich:
+                file_rows.append((rel, status))
+            else:
+                self.say(plain)
+
         self.detail('agentkit ' + self.version + ': installing into ' + str(self.target))
         with tempfile.TemporaryDirectory(prefix='agentkit-render-') as work:
             files, block = self.sources(Path(work), old)
@@ -356,39 +375,46 @@ class Lifecycle:
                     continue
                 if not exists and previous and mode == 'update':
                     new[rel] = previous
-                    self.say('kept removed: ' + rel)
+                    file_detail(rel, 'Kept removed', 'kept removed: ' + rel)
                     continue
                 if exists and (current_hash != sha or replace_link):
                     if previous and current_hash != previous and not self.args.force:
                         if not self.args.dry_run:
                             atomic_write(Path(str(dest) + '.agentkit-new'), src.read_bytes())
                         new[rel] = previous
-                        self.say('  ! kept your edited ' + rel + '; new version in ' + rel + '.agentkit-new')
+                        suffix = rel + '.agentkit-new'
+                        action = 'Would save new version to ' if self.args.dry_run else 'New version in '
+                        file_detail(rel, 'Kept edit. ' + action + suffix,
+                                    '  ! kept your edited ' + rel + '; new version in ' + suffix)
                         continue
                     if not previous and not self.args.force:
                         self.warn(rel + ' exists and is not managed by agentkit; skipped (use --force to replace, with backup)')
                         continue
                     self.backup(dest)
-                label = ''
+                action = None
                 if not exists:
                     added += 1
+                    action = 'added'
                 elif current_hash == sha and not replace_link:
                     same += 1
                 elif self.args.force and (replace_link or not previous or current_hash != previous):
                     forced += 1
-                    label = ' (replaced)'
+                    action = 'replaced'
                 else:
                     updated += 1
-                    label = ' (updated)'
-                if not exists or current_hash != sha or replace_link:
+                    action = 'updated'
+                if action and not self.terminal.rich:
+                    label = ' (' + action + ')' if action != 'added' else ''
                     self.detail('  + ' + rel + label)
                 if not self.args.dry_run:
                     if dest.is_symlink():
                         dest.unlink()
-                    if not exists or current_hash != sha or replace_link:
+                    if action:
                         atomic_write(dest, src.read_bytes())
+                        if self.terminal.rich and mode != 'update':
+                            file_rows.append((rel, action))
                 else:
-                    self.say('[dry-run] copy ' + rel)
+                    file_detail(rel, 'Would copy', '[dry-run] copy ' + rel)
                 new[rel] = sha
             for rel, sha in old.items():
                 if rel in files:
@@ -398,9 +424,13 @@ class Lifecycle:
                     if not self.args.dry_run:
                         dest.unlink()
                     removed += 1
-                    self.detail('  + ' + rel + ' (removed upstream)')
+                    if mode != 'update' or self.args.dry_run:
+                        action = 'Would remove' if self.args.dry_run else 'Removed'
+                        file_detail(rel, action + ' (removed upstream)', '  + ' + rel + ' (removed upstream)')
                 elif dest.exists():
-                    self.say('kept ' + rel + ' (removed upstream, but you edited it)')
+                    file_detail(rel, 'Kept edit (removed upstream)', 'kept ' + rel + ' (removed upstream, but you edited it)')
+            if file_rows:
+                self.terminal.table(('File', 'Status'), file_rows, self.say, status_column=1)
             self.say(('  + ' if added + updated + forced + removed else '  = ') + f'Files: {added} added, {updated} updated, {same} unchanged, {forced} replaced (--force), {removed} removed upstream')
             self.rows.append((self.current, 'files', f'{added} added, {updated} updated, {same} unchanged'))
             if not self.args.dry_run:
@@ -408,7 +438,8 @@ class Lifecycle:
             if block:
                 if self.total_steps:
                     self.step += 1
-                    self.say(f'[{self.step}/{self.total_steps}] Codex: config.toml')
+                    label = self.terminal.target_label('Codex')
+                    self.say(f'[{self.step}/{self.total_steps}] {label}: config.toml')
                 cfg = self.target / 'config.toml'
                 if mode != 'update' or codex.region((codex.rd(str(cfg)) or '').splitlines()):
                     status = io.StringIO()
@@ -436,12 +467,13 @@ class Lifecycle:
             raise ValueError('aborted')
         for target in self.targets():
             self.current = target
-            self.say('target ' + target + ': ' + str(self.target))
+            self.say('target ' + self.terminal.target_label(target) + ': ' + str(self.target))
             manifest = self.target / 'agentkit/manifest.json'
             if not manifest.exists():
                 raise ValueError('agentkit is not installed in ' + str(self.target))
             managed_files = load_manifest(manifest)
             cleanup_dirs = {self.target / 'agentkit'}
+            files = []
             for rel, sha in managed_files.items():
                 directory = (self.target / rel).parent
                 while directory != self.target:
@@ -451,10 +483,16 @@ class Lifecycle:
                 if dest.is_file() and not linked_parent(dest, self.target) and digest(dest) == sha:
                     if not self.args.dry_run:
                         dest.unlink()
+                    elif self.terminal.rich:
+                        files.append((rel, 'Would remove'))
                     else:
                         self.say('[dry-run] remove ' + rel)
+                elif self.terminal.rich:
+                    files.append((rel, 'Kept because you edited them'))
                 else:
                     self.say('Kept because you edited them: ' + rel)
+            if files:
+                self.terminal.table(('File', 'Status'), files, self.say, status_column=1)
             if target == 'codex':
                 cfg = self.target / 'config.toml'
                 if cfg.exists() and not self.args.dry_run:
@@ -480,10 +518,20 @@ class Lifecycle:
                 if self.args.purge and (self.target / 'agentkit').exists():
                     remove_guarded_tree(self.target / 'agentkit')
         self.say('Not removed: gstack and the karpathy plugin.')
-        if 'claude' in self.targets():
-            self.say('  gstack:   delete ' + str(self.homes['claude'] / 'skills/gstack') + ' and the settings.json entries marked _gstack_source')
-        if 'codex' in self.targets():
-            self.say('  gstack (codex): delete ' + str(self.homes['codex'] / 'skills/gstack-*') + ' (and the clone in ~/gstack if you want)')
+        targets = self.targets()
+        cleanup = []
+        if 'claude' in targets:
+            action = 'delete ' + str(self.homes['claude'] / 'skills/gstack') + ' and the settings.json entries marked _gstack_source'
+            cleanup.append(('claude', 'gstack', action))
+        if 'codex' in targets:
+            action = 'delete ' + str(self.homes['codex'] / 'skills/gstack-*') + ' (and the clone in ~/gstack if you want)'
+            cleanup.append(('codex', 'gstack', action))
+        if self.terminal.rich and cleanup:
+            self.terminal.table(('Target', 'Item', 'Manual cleanup'), cleanup, self.say,
+                                target_column=0, group_by=0)
+        else:
+            for target, _, action in cleanup:
+                self.say(('  gstack:   ' if target == 'claude' else '  gstack (codex): ') + action)
         if self.args.purge and not self.args.project:
             # Refuse checkout deletion; retained clone is harmless and protects arbitrary overrides.
             default = self.home.resolve() / '.agentkit'
@@ -508,93 +556,116 @@ class Lifecycle:
 
     def doctor(self) -> int:
         fails = 0
+        checks = []
+
+        def check(status, text, plain_prefix=None):
+            if self.terminal.rich:
+                checks.append((status, text))
+            else:
+                self.say((f'  {status:<6}' if plain_prefix is None else plain_prefix) + text)
+
+        def show_checks():
+            if checks:
+                self.terminal.table(('Status', 'Check'), checks, self.say, status_column=0)
+                checks.clear()
+
         self.say('agentkit ' + self.version + ' doctor')
         if platforms.is_windows() and not platforms.find_command('git'):
-            self.say('FAIL git not found; install Git and add it to PATH')
+            check('FAIL', 'git not found; install Git and add it to PATH', 'FAIL ')
             fails += 1
         if not platforms.is_windows():
             script = '. "$1"; REQ_WANT="$2" check_requirements report'
             proc = platforms.run(['bash', '-c', script, '_', str(self.root / 'lib/requirements.sh'), self.args.target or 'auto'], stdout=subprocess.DEVNULL if self.args.quiet else None)
             if proc.returncode:
-                self.say('FAIL requirements not met')
+                check('FAIL', 'requirements not met', 'FAIL ')
                 fails += 1
         local_bin = self.home / '.local/bin'
         paths = [Path(value).absolute() for value in os.environ.get('PATH', '').split(os.pathsep) if value]
         if local_bin.absolute() in paths:
-            self.say('  ok    $HOME/.local/bin is on PATH')
+            check('ok', '$HOME/.local/bin is on PATH')
         else:
-            self.say('  warn  $HOME/.local/bin is not on PATH')
+            check('warn', '$HOME/.local/bin is not on PATH')
         if (self.root / '.git').exists():
             result = platforms.run(['git', '-C', str(self.root), 'status', '--porcelain'], capture_output=True, text=True)
             if result.returncode or result.stdout.strip():
-                self.say('  warn  AGENTKIT_HOME has local changes (update may fail)')
+                check('warn', 'AGENTKIT_HOME has local changes (update may fail)')
             else:
-                self.say('  ok    AGENTKIT_HOME is clean')
+                check('ok', 'AGENTKIT_HOME is clean')
         else:
-            self.say('  warn  AGENTKIT_HOME is not a git clone (update will not work)')
+            check('warn', 'AGENTKIT_HOME is not a git clone (update will not work)')
+        if checks:
+            self.say('Environment')
+            show_checks()
         for target in self.targets():
             self.current = target
-            self.say('target ' + target + ': ' + str(self.target))
+            self.say('target ' + self.terminal.target_label(target) + ': ' + str(self.target))
             manifest = self.target / 'agentkit/manifest.json'
             if not manifest.is_file():
-                self.say('FAIL not installed in ' + str(self.target))
+                check('FAIL', 'not installed in ' + str(self.target), 'FAIL ')
                 fails += 1
+                show_checks()
                 continue
             installed_files = load_manifest(manifest)
             installed_version = json.loads(manifest.read_text(encoding='utf-8')).get('agentkit_version', '')
             if installed_version == self.version:
-                self.say('  ok    installed version ' + installed_version)
+                check('ok', 'installed version ' + installed_version)
             else:
-                self.say('  warn  installed version ' + str(installed_version) + ', repo version ' + self.version + ' (run: agentkit update)')
+                check('warn', 'installed version ' + str(installed_version) + ', repo version ' + self.version + ' (run: agentkit update)')
             for rel, sha in installed_files.items():
                 path = self.target / rel
                 if not path.is_file():
-                    self.say('FAIL agent ' + Path(rel).stem + ': missing')
+                    check('FAIL', 'agent ' + Path(rel).stem + ': missing', 'FAIL ')
                     fails += 1
                 elif digest(path) != sha:
-                    self.say('warn agent ' + Path(rel).stem + ': modified (kept on update)')
+                    check('warn', 'agent ' + Path(rel).stem + ': modified (kept on update)', 'warn ')
                 elif rel.startswith('agents/'):
-                    self.say('  ok    agent ' + Path(rel).stem)
+                    check('ok', 'agent ' + Path(rel).stem)
             for source in sorted((self.root / 'agents').glob('*.md')):
                 rel = 'agents/' + source.stem + ('.toml' if target == 'codex' else '.md')
                 if rel not in installed_files:
                     if (self.target / rel).exists():
-                        self.say('  warn  agent ' + source.stem + ': not managed by agentkit')
+                        check('warn', 'agent ' + source.stem + ': not managed by agentkit')
                     else:
-                        self.say('  FAIL  agent ' + source.stem + ': missing')
+                        check('FAIL', 'agent ' + source.stem + ': missing')
                         fails += 1
             for folder in sorted((self.target / 'skills').glob('*')):
                 if (folder / 'SKILL.md').exists():
-                    self.say('  ok    skill ' + folder.name)
+                    check('ok', 'skill ' + folder.name)
             if START in (integrations.rd(str(self.instruction_path())) or ''):
-                self.say('  ok    ' + self.instruction_path().name + ' block')
+                check('ok', self.instruction_path().name + ' block')
             else:
-                self.say('  warn  ' + self.instruction_path().name + ' block not present')
+                check('warn', self.instruction_path().name + ' block not present')
             if target == 'codex':
                 if codex.region((codex.rd(str(self.target / 'config.toml')) or '').splitlines()):
-                    self.say('  ok    config.toml agents block')
+                    check('ok', 'config.toml agents block')
                 else:
-                    self.say('  warn  config.toml agents block not present')
+                    check('warn', 'config.toml agents block not present')
             elif not platforms.is_windows():
                 if 'agentkit-agent-log' in (integrations.rd(str(self.target / 'settings.json')) or ''):
-                    self.say('  ok    SubagentStop hook in settings.json')
+                    check('ok', 'SubagentStop hook in settings.json')
                 else:
-                    self.say('  warn  SubagentStop hook not in settings.json')
-            self.posix_integration('doctor')
+                    check('warn', 'SubagentStop hook not in settings.json')
+            diagnostics = self.posix_integration('doctor', capture=self.terminal.rich and not self.args.quiet) or ''
+            for line in diagnostics.splitlines():
+                status, _, text = line.strip().partition(' ')
+                if status in ('ok', 'warn'):
+                    check(status, text.lstrip())
             if platforms.is_windows():
-                self.say('  warn  Native Windows: gstack, karpathy plugin, Bash hooks and auto-update integrations are unavailable')
+                check('warn', 'Native Windows: gstack, karpathy plugin, Bash hooks and auto-update integrations are unavailable')
             if not platforms.find_command(target):
-                self.say('FAIL ' + target + ' CLI not found')
+                check('FAIL', target + ' CLI not found', 'FAIL ')
                 fails += 1
+            show_checks()
         self.say('all required checks passed' if not fails else str(fails) + ' required check(s) failed')
         return int(bool(fails))
 
-    def posix_integration(self, stage: str) -> None:
+    def posix_integration(self, stage: str, *, capture=False):
         if platforms.is_windows():
             return
         if stage == 'install' and 'hooks' not in self.args.skip and self.total_steps:
             self.step += 1
-            self.say(f'[{self.step}/{self.total_steps}] Claude: hooks')
+            label = self.terminal.target_label('Claude')
+            self.say(f'[{self.step}/{self.total_steps}] {label}: hooks')
         diagnostics = (
             'if gs_present "$CUR" >/dev/null; then echo "  ok    gstack"; else echo "  warn  gstack not installed"; fi; '
             'if [ "$CUR" = claude ]; then '
@@ -627,9 +698,12 @@ class Lifecycle:
             settings = self.target / 'settings.json'
             existing = integrations.rd(str(settings)) or ''
             self.rows.append((self.current, 'SubagentStop hook', 'unchanged' if 'agentkit-agent-log' in existing else 'added'))
-        result = platforms.run(['bash', '-c', script, '_', str(self.root / 'lib/legacy-cli.sh')] + opts, stdout=subprocess.DEVNULL if stage == 'doctor' and self.args.quiet else None)
+        stdout = subprocess.PIPE if capture else subprocess.DEVNULL if stage == 'doctor' and self.args.quiet else None
+        result = platforms.run(['bash', '-c', script, '_', str(self.root / 'lib/legacy-cli.sh')] + opts,
+                               stdout=stdout, text=capture)
         if result.returncode:
             raise ValueError(f'{stage} integration failed (exit {result.returncode}); review the failed stage and its output/log above, fix the reported issue, then rerun agentkit install')
+        return result.stdout if capture else None
 
     def execute(self) -> int:
         cmd = self.args.command
@@ -640,8 +714,8 @@ class Lifecycle:
             parser().print_help()
         elif cmd == 'install':
             self.say('agentkit ' + self.version)
-            if sys.stdout.isatty() and 'NO_COLOR' not in os.environ and not self.args.quiet:
-                print('\033[36m( o.o )\033[0m')
+            if self.terminal.color:
+                self.say(self.terminal.paint('( o.o )', '36'))
             self.requirements()
             model_batch = models.configure(self, installing=True)
             self.desktop_installations()
@@ -652,7 +726,8 @@ class Lifecycle:
             for target in self.targets():
                 self.current = target
                 self.step += 1
-                self.say(f'[{self.step}/{self.total_steps}] ' + ('Claude' if target == 'claude' else 'Codex') + ': agents and skills')
+                label = self.terminal.target_label(target.capitalize())
+                self.say(f'[{self.step}/{self.total_steps}] {label}: agents and skills')
                 self.sync('install')
                 if target == 'claude':
                     self.posix_integration('install')
@@ -661,9 +736,9 @@ class Lifecycle:
             except ValueError:
                 self.say('Installation incomplete. Completed core files remain installed; review the failed integration above and rerun after fixing it.')
                 raise
-            self.say('TARGET  ITEM  STATUS')
-            for row in self.rows:
-                self.say('  '.join(row))
+            rows = sorted(self.rows, key=lambda row: row[0]) if self.terminal.rich else self.rows
+            self.terminal.table(('TARGET', 'ITEM', 'STATUS'), rows, self.say,
+                                target_column=0, status_column=2, group_by=0)
             if os.environ.get('AGENTKIT_BOOTSTRAP_ACTIVE') != '1':
                 self.say('Done. Run agentkit doctor to check the setup.')
         elif cmd == 'update':
@@ -705,7 +780,7 @@ class Lifecycle:
                 self.current = target
                 if not (self.target / 'agentkit/manifest.json').exists():
                     raise ValueError('agentkit is not installed in ' + str(self.target))
-                self.say('  Updating ' + target + ' ...')
+                self.say('  Updating ' + self.terminal.target_label(target) + ' ...')
                 self.sync('update')
                 if target == 'claude':
                     self.posix_integration('update')
@@ -745,7 +820,13 @@ def main(argv=None) -> int:
         print('error: ' + str(exc), file=sys.stderr)
         if 'lifecycle' in locals() and lifecycle.args.command == 'install':
             print('Installation incomplete. Completed/skipped stages:', file=sys.stderr)
-            for row in lifecycle.rows:
-                print('  ' + '  '.join(row), file=sys.stderr)
+            terminal = ui.Terminal(sys.stderr, quiet=lifecycle.args.quiet)
+            if terminal.rich and lifecycle.rows:
+                rows = sorted(lifecycle.rows, key=lambda row: row[0])
+                terminal.table(('Target', 'Item', 'Status'), rows, say=lambda text: print(text, file=sys.stderr),
+                               target_column=0, status_column=2, group_by=0)
+            else:
+                for row in lifecycle.rows:
+                    print('  ' + '  '.join(row), file=sys.stderr)
             print('  failed: ' + str(exc), file=sys.stderr)
         return 1
