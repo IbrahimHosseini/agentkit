@@ -415,6 +415,8 @@ The supervisor can split this into a database part (migration), a backend part (
 
 Some skills come from gstack and the karpathy plugin (see Dependencies). An agent lists a skill in its file. If the skill is not installed, the agent reports it.
 
+Codex launches must use the installed role's model and instructions from `${CODEX_HOME:-$HOME/.codex}/agents/<role>.toml`. Naming a generic subagent after a role does not load that file. The workflow selects a registered role when supported, or passes its settings explicitly. Model changes apply to newly launched agents; an existing agent keeps the settings from its launch.
+
 ## Updating
 
 ```bash
