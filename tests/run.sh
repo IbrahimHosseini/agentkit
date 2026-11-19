@@ -815,6 +815,11 @@ t_log_commands() {
   assert_contains "agent: backend"
   assert_contains "rule: destructive"
   assert_contains "$id"
+  run_pty env TERM=xterm-256color COLUMNS=100 "$AK" log report
+  assert_rc 0 "log report on a terminal"
+  assert_contains $'┌ \033[1magent: backend\033[0m'
+  assert_contains '├ rule: destructive'
+  assert_contains "$id"
   run "$AK" log export --out "$f1"
   assert_rc 0 "log export"
   assert_jtrue "$f1" "d['schema'] == 'agentkit-log-export/1' and d['groups'][0]['agent'] == 'backend' and d['groups'][0]['count'] == 1"
@@ -1435,23 +1440,60 @@ t_output_terminal_color_and_no_color() {
   setup_home
   # Consent has separate tests; seed a desktop for this output-only PTY case.
   mk_desktop claude
-  run_pty "$AK" install --yes --skip gstack --skip karpathy
+  mk_desktop codex
+  mk_codex
+  local claude_color=$'\033[38;5;173mclaude\033[0m' codex_color=$'\033[38;5;73mcodex\033[0m'
+  run_pty env TERM=xterm-256color COLUMNS=100 "$AK" install --target both --yes --skip gstack --skip karpathy
   assert_rc 0 "install on a terminal"
   has_esc "$OUT" || fail "no color on a terminal"
   assert_contains "( o.o )" "cat logo on a terminal"
   assert_contains "Requirements:"
+  assert_contains "Tool     | Status"
+  assert_contains "$claude_color"
+  assert_contains "$codex_color"
   # NO_COLOR: no escape sequence even on a terminal.
-  run_pty env NO_COLOR=1 "$AK" install --yes --skip gstack --skip karpathy
+  run_pty env TERM=xterm-256color NO_COLOR=1 "$AK" install --target both --yes --skip gstack --skip karpathy
   assert_rc 0 "install on a terminal with NO_COLOR"
   has_esc "$OUT" && fail "NO_COLOR ignored on a terminal"
   assert_contains "Requirements:"
   assert_not_contains "( o.o )"
-  run_pty env NO_COLOR=1 "$AK" doctor
+  run_pty env TERM=xterm-256color NO_COLOR=1 COLUMNS=100 "$AK" doctor --target both
+  assert_rc 0 "doctor on a terminal with NO_COLOR"
   has_esc "$OUT" && fail "NO_COLOR ignored by doctor on a terminal"
+  assert_contains "│ Status │ Check"
+  assert_contains "config.toml agents block"
+  assert_contains "SubagentStop hook in settings.json"
   # --quiet: no output at all on success, even on a terminal.
-  run_pty "$AK" install --quiet --yes --skip gstack --skip karpathy
+  run_pty env TERM=xterm-256color "$AK" install --quiet --target both --yes --skip gstack --skip karpathy
   assert_rc 0 "quiet install on a terminal"
   assert_eq "$OUT" "" "quiet install on a terminal printed something"
+}
+
+t_output_models_terminal_and_plain() {
+  setup_home
+  mk_codex
+  install_user --target both
+  assert_rc 0 "install both targets"
+  run_pty env TERM=xterm-256color COLUMNS=80 "$AK" models --target both --agent backend --yes
+  assert_rc 0 "both model targets on a terminal"
+  assert_contains $'\033[38;5;173mclaude\033[0m'
+  assert_contains $'\033[38;5;73mcodex\033[0m'
+  assert_contains '├────────┼'
+  assert_contains 'inherit from CLI'
+  # Isolated Python ignores PYTHONIOENCODING. Disable UTF-8 mode under LC_ALL=C to exercise ASCII.
+  run_pty env TERM=xterm-256color NO_COLOR=1 COLUMNS=36 "$PY" -I -X utf8=0 "$AKH/lib/agentkit.py" models --target both --agent backend --yes
+  assert_rc 0 "both model targets in a narrow ASCII terminal with NO_COLOR"
+  has_esc "$OUT" && fail "NO_COLOR ignored by models on a terminal"
+  assert_contains 'Target: claude'
+  assert_contains 'Target: codex'
+  assert_contains 'Effort: inherit from CLI'
+  assert_contains '------------------------------------'
+  run "$AK" models --target both --agent backend --yes
+  assert_rc 0 "both model targets redirected"
+  has_esc "$OUT" && fail "model settings contain colors when redirected"
+  assert_contains 'Target  Agent  Model  Effort'
+  assert_match '^claude  backend  sonnet  inherit from CLI$'
+  assert_match '^codex  backend  [^ ]+  [^ ]+$'
 }
 
 t_output_quiet() {
@@ -1787,7 +1829,7 @@ EOF
   # The same on a terminal (the spinner path).
   mk_desktop codex
   rm -rf "$CODEX/skills/gstack-review"
-  run_pty "$AK" install --target codex --yes --skip karpathy
+  run_pty env TERM=xterm-256color "$AK" install --target codex --yes --skip karpathy
   assert_rc 0 "install with gstack on a terminal"
   assert_contains "gstack: set up for codex"
   assert_grep "$STUB_LOG" "setup --host codex"
@@ -2560,6 +2602,7 @@ t_requirements_ok_skips_check_not_detection
 t_requirements_doctor
 t_output_plain_has_no_ansi
 t_output_terminal_color_and_no_color
+t_output_models_terminal_and_plain
 t_output_quiet
 t_output_quiet_install
 t_output_markers_and_table

@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
+### Changed
+
+- Model settings and interactive choices use aligned terminal tables, with clay-orange Claude labels and teal Codex labels. The model picker shows advertised effort levels and proposed changes in the same format.
+- Application detection, installation summaries, `doctor`, uninstall plans, and POSIX log reports display structured lists with separators.
+- Narrow terminals use compact layouts, and `NO_COLOR` keeps the table structure in monochrome. Redirected output keeps its existing plain format.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added
@@ -114,7 +122,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/IbrahimHosseini/agentkit/compare/dc29d80cfa3dd02991f5eeeeeb13c51e88cf555a...v0.5.0
 [0.4.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.0...v0.3.1
