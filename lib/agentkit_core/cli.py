@@ -56,7 +56,7 @@ class Lifecycle:
         self.version = (self.root / 'VERSION').read_text().strip()
         self.stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         self.current = 'claude'
-        for target_home in self.homes.values():
+        for target_home in ([] if args.command == 'models' else self.homes.values()):
             for state_path in (target_home / 'agentkit', target_home / 'agentkit/backups'):
                 if linked_parent(state_path, target_home):
                     raise ValueError('refusing linked state directory: ' + str(state_path))
@@ -186,7 +186,7 @@ class Lifecycle:
                 continue
             reason = desktop.support(target)
             if reason:
-                self.say(target + ' desktop: ' + reason + '; see ' + desktop.PAGES[target])
+                self.say(target + ' desktop: ' + reason + ('' if target == 'claude' and sys.platform.startswith('linux') else '; see ' + desktop.PAGES[target]))
                 self.rows.append((target, 'desktop', 'unsupported'))
                 continue
             if self.args.dry_run:

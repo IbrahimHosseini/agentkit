@@ -10,6 +10,7 @@ import os
 import queue
 import re
 import signal
+import tempfile
 import subprocess
 import sys
 import threading
@@ -22,14 +23,14 @@ from .managed import atomic_write, digest, linked_parent, load_manifest
 
 PREFERENCES = 'agentkit/model-overrides.json'
 # Live catalogs may advertise levels beyond the bundled source-file schema.
-EFFORTS = ('none', 'minimal') + codex.EFFORTS
+EFFORT = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
 MODEL_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/@+()\[\]-]{0,255}$')
 
 
 def validate_choice(value):
     if (not isinstance(value, dict) or set(value) != {'model', 'effort'}
             or not isinstance(value['model'], str) or not MODEL_ID.fullmatch(value['model'])
-            or (value['effort'] is not None and value['effort'] not in EFFORTS)):
+            or (value['effort'] is not None and (not isinstance(value['effort'], str) or not EFFORT.fullmatch(value['effort'])))):
         raise ValueError('invalid model preference (expected model ID and supported effort or null)')
     return value
 
@@ -102,19 +103,21 @@ def patch_agent(data, target, choice):
 def fallback_catalog(root, target):
     if target == 'claude':
         # Conservative common levels. Unknown/manual IDs inherit CLI effort.
-        return [{'model': name, 'efforts': ['low', 'medium', 'high'] if name != 'haiku' else [],
-                 'default': 'high' if name == 'opus' else 'medium' if name == 'sonnet' else None}
+        return [{'model': name, 'name': name, 'efforts': ['low', 'medium', 'high'] if name != 'haiku' else [],
+                 'default': 'high' if name == 'opus' else 'medium' if name == 'sonnet' else None,
+                 'hidden': False, 'source': 'local fallback', 'status': 'unverified'}
                 for name in ('opus', 'sonnet', 'haiku')]
     result = []
     for model, effort in codex.load_map(str(root / 'codex/models.map')).values():
         if not any(item['model'] == model for item in result):
             # The mapping is the only locally verified capability. Do not guess
             # which additional levels a model accepts when discovery failed.
-            result.append({'model': model, 'efforts': [effort], 'default': effort})
+            result.append({'model': model, 'name': model, 'efforts': [effort], 'default': effort,
+                           'hidden': False, 'source': 'local fallback', 'status': 'unverified'})
     return result
 
 
-def codex_catalog(timeout=10):
+def codex_catalog(timeout=10, include_hidden=False):
     """JSON-RPC over stdio; no session or turn is started and no tokens are read."""
     deadline = time.monotonic() + timeout
     proc = subprocess.Popen(platforms.command_args(['codex', 'app-server']),
@@ -179,27 +182,29 @@ def codex_catalog(timeout=10):
         send({'method': 'initialized'})
         entries, cursor, seen = [], None, set()
         while True:
-            page = request(len(seen) + 2, 'model/list', {'cursor': cursor, 'limit': 100, 'includeHidden': False})
+            page = request(len(seen) + 2, 'model/list', {'cursor': cursor, 'limit': 100, 'includeHidden': include_hidden})
             if not isinstance(page, dict) or not isinstance(page.get('data'), list):
                 raise ValueError('invalid model catalog')
             for item in page['data']:
                 if not isinstance(item, dict):
                     raise ValueError('invalid model catalog entry')
-                if item.get('hidden'):
+                if item.get('hidden') and not include_hidden:
                     continue
                 model = item.get('model')
                 raw = item.get('supportedReasoningEfforts', [])
                 if not isinstance(raw, list):
                     raise ValueError('invalid model effort list')
                 efforts = [entry.get('reasoningEffort') for entry in raw if isinstance(entry, dict)]
-                if len(efforts) != len(raw) or any(e not in EFFORTS for e in efforts):
+                if len(efforts) != len(raw) or any(not isinstance(e, str) or not EFFORT.fullmatch(e) for e in efforts):
                     raise ValueError('unsupported model effort list; upgrade agentkit')
-                default = item.get('defaultReasoningEffort')
+                default = item.get('defaultReasoningEffort') if efforts else None
                 validate_choice({'model': model, 'effort': default})
                 if default is not None and default not in efforts:
                     raise ValueError('invalid default effort')
                 if not any(entry['model'] == model for entry in entries):
-                    entries.append({'model': model, 'efforts': efforts, 'default': default})
+                    entries.append({'model': model, 'name': item.get('displayName') if isinstance(item.get('displayName'), str) and item['displayName'] else model,
+                                    'efforts': efforts, 'default': default, 'hidden': bool(item.get('hidden')),
+                                    'source': 'Codex app-server', 'status': 'reported'})
             cursor = page.get('nextCursor')
             if not cursor:
                 break
@@ -251,17 +256,112 @@ def codex_catalog(timeout=10):
 
 
 
-def catalog(root, target, say):
-    if target == 'codex':
+def stop_process(proc):
+    """Terminate only the helper process tree started by this module."""
+    if os.name != 'nt':
         try:
-            result = codex_catalog()
-            say('Models reported by the current Codex provider (access is not guaranteed).')
-            return result
-        except (OSError, ValueError, subprocess.SubprocessError):
-            say('Live model discovery unavailable (login, connection or CLI version).')
-    else:
-        say('Check account availability with /model in Claude Code.')
-    say('Known models; access unverified. Login and an eligible subscription or API credits may be required.')
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            if proc.poll() is None:
+                proc.kill()
+    elif proc.poll() is None:
+        try:
+            subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        except (OSError, subprocess.SubprocessError):
+            proc.kill()
+    proc.wait(timeout=2)
+
+
+def bounded_run(args, timeout, cwd=None, stage='initialization'):
+    proc = subprocess.Popen(platforms.command_args(args), cwd=cwd,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            start_new_session=os.name != 'nt')
+    try:
+        output, _ = proc.communicate(timeout=timeout)
+        if proc.returncode:
+            if stage == 'setup':
+                raise ValueError('Claude SDK setup failed; check npm network/registry access and retry')
+            raise ValueError('Claude SDK initialization failed; run claude /login and check CLI version')
+        if len(output) > 1024 * 1024:
+            raise ValueError('Claude SDK catalog response is too large')
+        return output
+    except subprocess.TimeoutExpired:
+        remedy = 'check npm network/registry access and retry' if stage == 'setup' else 'check connection and CLI login'
+        raise ValueError('Claude SDK ' + stage + ' timed out; ' + remedy) from None
+    finally:
+        stop_process(proc)
+        proc.stdout.close()
+
+
+def claude_catalog(root, home, timeout=10):
+    if home is None:
+        raise ValueError('Claude SDK setup skipped; run without --dry-run to enable live discovery')
+    deadline = time.monotonic() + timeout
+    node = platforms.find_command('node')
+    if not node:
+        raise ValueError('Node.js is missing; install Node.js to enable live Claude discovery')
+    executable = platforms.find_command('claude')
+    if not executable:
+        raise ValueError('Claude Code CLI is missing; install it and run claude /login')
+    runtime = home / 'agentkit/runtime/claude-catalog'
+    if linked_parent(runtime, home):
+        raise ValueError('Claude SDK runtime is linked; use an ordinary target directory')
+    for child in ('npm-cache', 'node_modules', 'package.json', 'package-lock.json', '.installed-lock-sha256',
+                  'node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'):
+        if linked_parent(runtime / child, home):
+            raise ValueError('Claude SDK runtime contains linked files; use an ordinary runtime directory')
+    source = root / 'lib/claude_catalog'
+    manifests = ['package.json', 'package-lock.json']
+    marker = runtime / '.installed-lock-sha256'
+    lock_digest = hashlib.sha256((source / 'package-lock.json').read_bytes()).hexdigest().encode('ascii')
+    ready = marker.is_file() and marker.read_bytes() == lock_digest and all((runtime / name).is_file() and (runtime / name).read_bytes() == (source / name).read_bytes()
+                for name in manifests) and (runtime / 'node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs').is_file()
+    if not ready:
+        npm = platforms.find_command('npm')
+        if not npm:
+            raise ValueError('npm is missing; install npm to set up the pinned Claude SDK')
+        runtime.mkdir(parents=True, exist_ok=True)
+        marker.unlink(missing_ok=True)
+        for name in manifests:
+            atomic_write(runtime / name, (source / name).read_bytes())
+        bounded_run([npm, 'ci', '--ignore-scripts', '--omit=optional', '--no-audit', '--no-fund',
+                     '--cache', str(runtime / 'npm-cache')], max(0.01, deadline - time.monotonic()), runtime, stage='setup')
+        atomic_write(marker, lock_digest)
+    with tempfile.TemporaryDirectory(prefix='agentkit-claude-catalog-') as cwd:
+        raw = json.loads(bounded_run([node, str(source / 'discover.mjs'), str(runtime), executable, cwd],
+                                    max(0.01, deadline - time.monotonic())))
+    if not isinstance(raw, list) or not raw:
+        raise ValueError('Claude SDK returned an empty or invalid catalog; check CLI login/version')
+    entries = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError('Claude SDK returned an invalid model entry')
+        model = item.get('value')
+        efforts = item.get('supportedEffortLevels')
+        if efforts is None:
+            efforts = []
+        if not isinstance(efforts, list):
+            raise ValueError('Claude SDK returned invalid effort capabilities')
+        validate_choice({'model': model, 'effort': None})
+        for effort in efforts:
+            validate_choice({'model': model, 'effort': effort})
+        entries.append({'model': model, 'name': item.get('displayName') if isinstance(item.get('displayName'), str) and item['displayName'] else model,
+                        'efforts': efforts, 'default': None, 'hidden': False,
+                        'source': 'Claude Agent SDK', 'status': 'reported'})
+    return entries
+
+
+def catalog(root, target, say, home=None, include_hidden=False):
+    try:
+        result = codex_catalog(include_hidden=include_hidden) if target == 'codex' else claude_catalog(root, home)
+        say('Models reported by ' + target + ' (access is not guaranteed).')
+        return result
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        # SDK stderr/provider output is deliberately never printed.
+        reason = str(exc) if isinstance(exc, ValueError) else 'helper could not start; check installed CLI and runtime'
+        say('Live model discovery unavailable: ' + reason + '.')
+    say('Local fallback: known models; access unverified. Check CLI login, version and account availability.')
     return fallback_catalog(root, target)
 
 
@@ -278,13 +378,20 @@ def yes_no(prompt, read=input):
             return True
 
 
-def choose(current, default, entries, say, read=input):
+def choose(current, default, entries, say, read=input, show_all=None):
     say('Current: ' + describe(current) + '; agentkit default: ' + describe(default))
     for index, item in enumerate(entries, 1):
-        say(f'  {index}. ' + item['model'])
+        say(f'  {index}. ' + str(item.get('name', item['model'])) + ' [' + item['model'] + ']'
+            + (' (hidden)' if item.get('hidden') else '')
+            + ' — efforts: ' + (', '.join(item['efforts']) or 'inherit from CLI'))
+    if show_all:
+        say('  a. Show all models (including hidden)')
     say('  m. Enter a model ID manually\n  r. Restore agentkit default\n  Enter: keep current model')
     while True:
         answer = read('Model: ').strip().lower()
+        if answer == 'a' and show_all:
+            entries[:] = show_all()
+            return choose(current, default, entries, say, read)
         if answer == 'r':
             return None
         if not answer:
@@ -333,15 +440,18 @@ def snapshot(path, home):
     return path.read_bytes() if path.exists() else None
 
 
-def gather(lifecycle, installing):
+def gather(lifecycle, installing, targets=None):
     """Build a read-only inventory, excluding files the picker may not edit."""
     rows, states = [], {}
     sources = sorted((lifecycle.root / 'agents').glob('*.md'))
     name_filter = getattr(lifecycle.args, 'agent', None)
     if name_filter and not any(src.stem == name_filter for src in sources):
         raise ValueError('unknown agent: ' + name_filter)
-    for target in lifecycle.targets():
+    for target in (targets if targets is not None else lifecycle.targets()):
         home = lifecycle.homes[target]
+        for state_path in (home / 'agentkit', home / 'agentkit/backups'):
+            if linked_parent(state_path, home):
+                raise ValueError('refusing linked state directory: ' + str(state_path))
         manifest_path = home / 'agentkit/manifest.json'
         manifest_bytes = snapshot(manifest_path, home)
         if not installing and manifest_bytes is None:
@@ -402,28 +512,45 @@ def show_table(rows, say, choices=None):
 def configure(lifecycle, installing=False, read=None):
     """Collect the entire selection before any mutation. Return a commit batch."""
     read = read or input
-    rows, states = gather(lifecycle, installing)
     interactive = (not lifecycle.args.yes and sys.stdin.isatty()
                    and (not platforms.is_windows() or desktop.windows_console_input(sys.stdin)))
     # In quiet interactive mode the user must still see what the questions mean.
     say = print if interactive else lifecycle.say
-    show_table(rows, say)
     if not interactive:
+        rows, _ = gather(lifecycle, installing)
+        show_table(rows, say)
         say('Model settings kept. Run agentkit models in a terminal to change them.')
         return None
-    if not rows:
-        say('No eligible managed agents to configure.')
-        return None
     try:
+        targets = list(lifecycle.targets())
+        if len(targets) > 1 and (installing or not lifecycle.args.target):
+            say('Choose model settings target: 1. Claude  2. Codex  3. Both  0. Cancel')
+            while True:
+                answer = read('Target: ').strip().lower()
+                if answer in ('0', 'c', 'cancel', ''):
+                    say('Model changes cancelled.')
+                    return None
+                selected = {'1': ['claude'], '2': ['codex'], '3': targets,
+                            'claude': ['claude'], 'codex': ['codex'], 'both': targets}.get(answer)
+                if selected and all(target in targets for target in selected):
+                    targets = selected
+                    break
+                say('Choose an installed target or cancel.')
+        rows, states = gather(lifecycle, installing, targets)
+        show_table(rows, say)
+        if not rows:
+            say('No eligible managed agents to configure.')
+            return None
         if not yes_no('Do you want to change these models or effort levels? [y/N] ', read):
             return None
         choices, catalogs = {}, {}
         for row in rows:
             target = row['target']
             if target not in catalogs:
-                catalogs[target] = catalog(lifecycle.root, target, say)
+                catalogs[target] = catalog(lifecycle.root, target, say, home=None if lifecycle.args.dry_run else lifecycle.homes[target])
             say('\n' + target + ' / ' + row['name'])
-            value = choose(row['current'], row['default'], catalogs[target], say, read)
+            show_all = (lambda: catalog(lifecycle.root, target, say, home=lifecycle.homes[target], include_hidden=True)) if target == 'codex' else None
+            value = choose(row['current'], row['default'], catalogs[target], say, read, show_all)
             # An unchanged choice must not accidentally pin a source default.
             if value != row['current'] or (value is None and row['name'] in states[target]['agents']):
                 choices[(target, row['name'])] = value

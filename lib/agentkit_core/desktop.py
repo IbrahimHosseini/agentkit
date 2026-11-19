@@ -1,6 +1,6 @@
 """Bounded desktop discovery and explicitly consented official installers.
 
-Sources: claude.com/download, code.claude.com/docs/en/desktop-linux,
+Sources: claude.com/download,
 learn.chatgpt.com/docs/app and its Linux/Windows installation pages.
 Desktop presence is informational; CLI readiness is checked separately.
 """
@@ -206,6 +206,10 @@ def os_release() -> Dict[str, str]:
 
 
 def support(target: str) -> str:
+    # Product policy, independent of current or future vendor Linux support.
+    # WSL runs this Linux path too; Claude Code remains a separate requirement.
+    if target == 'claude' and sys.platform.startswith('linux'):
+        return 'Claude Desktop installation is disabled on Linux; Claude Code CLI is required'
     arch = platform.machine().lower()
     if arch not in ('x86_64', 'amd64', 'arm64', 'aarch64'):
         return 'unsupported desktop architecture: ' + arch
@@ -217,8 +221,7 @@ def support(target: str) -> str:
         release = os_release()
         distro, version = release.get('ID'), release.get('VERSION_ID', '')
         supported = ((distro == 'ubuntu' and version in ('24.04', '26.04')) or (distro == 'debian' and version == '13') or
-                     (distro == 'fedora' and version in ('43', '44')) or distro == 'arch') if target == 'codex' else (
-                         (distro == 'ubuntu' and version in ('22.04', '24.04', '26.04')) or (distro == 'debian' and version in ('12', '13')))
+                     (distro == 'fedora' and version in ('43', '44')) or distro == 'arch')
         return '' if supported else 'desktop is not officially supported on this Linux distribution/version'
     return 'desktop is not supported on this operating system'
 
@@ -325,10 +328,9 @@ def install(target: str, say: Callable[[str], None], quiet: bool = False) -> Non
                         args.insert(0, 'sudo')
                     command('Installing ChatGPT (Codex) desktop', args, say, quiet)
                 else:
-                    # Arch scripts perform a full OS upgrade; Claude's apt setup
-                    # registers a repository. Keep these explicit official steps
-                    # visible in their browser rather than silently changing them.
-                    url = 'https://code.claude.com/docs/en/desktop-linux' if target == 'claude' else 'https://learn.chatgpt.com/docs/linux/linux-app'
+                    # Arch scripts perform a full OS upgrade. Keep these official
+                    # steps visible rather than silently changing the system.
+                    url = 'https://learn.chatgpt.com/docs/linux/linux-app'
                     say('Complete the official desktop installation: ' + url)
                     if not webbrowser.open(url):
                         say('Open that URL in your browser to continue.')

@@ -65,7 +65,7 @@ class ModelTests(unittest.TestCase):
         with mock.patch('sys.stdin.isatty', return_value=True), \
              mock.patch.object(models.desktop, 'windows_console_input', return_value=True), \
              mock.patch.object(models, 'catalog',
-                side_effect=lambda root, target, say: models.fallback_catalog(root, target)):
+                side_effect=lambda root, target, say, **kw: models.fallback_catalog(root, target)):
             return models.configure(life, installing, read=mock.Mock(side_effect=answers))
 
     def test_numbered_selection_retry_and_effort(self):
@@ -363,6 +363,94 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'linked'):
             models.load_preferences(life.homes['claude'])
 
+    def test_target_selection_precedes_gather_and_leaves_other_home_untouched(self):
+        life = self.lifecycle('models', '--agent', 'backend')
+        self.seed('claude', life=life)
+        self.seed('codex', life=life)
+        before = tree(life.homes['codex'])
+        original = models.load_preferences
+        queried = []
+        def preferences(home):
+            queried.append(home)
+            self.assertEqual(home, life.homes['claude'])
+            return original(home)
+        with mock.patch.object(models, 'load_preferences', side_effect=preferences):
+            models.commit(life, self.batch(life, ['1', 'y', '1', '2', 'y']))
+        self.assertTrue(queried)
+        self.assertEqual(tree(life.homes['codex']), before)
+        self.assertLess(self.output.getvalue().index('Choose model settings target'),
+                        self.output.getvalue().index('Target  Agent'))
+
+    def test_target_cancel_and_eof_never_gather(self):
+        life = self.lifecycle('models')
+        self.seed('claude', life=life)
+        self.seed('codex', life=life)
+        before = tree(self.home)
+        for answer in ['0', EOFError()]:
+            with mock.patch.object(models, 'gather', side_effect=AssertionError('must select first')):
+                self.assertIsNone(self.batch(life, [answer]))
+        self.assertEqual(tree(self.home), before)
+
+    def test_install_model_subset_does_not_change_installation_targets(self):
+        life = self.lifecycle('install', '--target', 'both')
+        life.args.agent = 'backend'
+        self.seed('claude', life=life)
+        self.seed('codex', life=life)
+        before = tree(life.homes['codex'])
+        batch = self.batch(life, ['1', 'y', '1', '2', 'y'], installing=True)
+        self.assertEqual(life.targets(), ['claude', 'codex'])
+        models.commit(life, batch)
+        self.assertEqual(tree(life.homes['codex']), before)
+
+    def test_selected_linked_backups_rejected_unselected_ignored(self):
+        life = self.lifecycle('models', '--agent', 'backend')
+        self.seed('claude', life=life)
+        self.seed('codex', life=life)
+        backups = life.homes['codex'] / 'agentkit/backups'
+        outside = self.home / 'outside-backups'
+        outside.mkdir()
+        try:
+            backups.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest('symlink privileges unavailable')
+        self.assertIsNone(self.batch(life, ['1', 'n']))
+        with self.assertRaisesRegex(ValueError, 'linked state'):
+            self.batch(life, ['2'])
+
+    def test_dry_run_claude_skips_runtime_install(self):
+        life, _ = self.seed()
+        life.args.dry_run = True
+        with mock.patch('sys.stdin.isatty', return_value=True), \
+             mock.patch.object(models, 'bounded_run', side_effect=AssertionError('runtime mutation')):
+            self.assertIsNone(models.configure(life, read=mock.Mock(side_effect=['y', '', '', 'n'])))
+        self.assertFalse((life.homes['claude'] / 'agentkit/runtime').exists())
+
+    def test_safe_new_effort_persists_and_updates_both_formats(self):
+        for target in ['claude', 'codex']:
+            life, dest = self.seed(target)
+            row, states = models.gather(life, False)
+            models.commit(life, (row, states, {(target, 'backend'): {'model': 'future', 'effort': 'ultra'}}))
+            self.assertEqual(models.read_choice(dest.read_bytes(), target)['effort'], 'ultra')
+            self.assertEqual(models.load_preferences(life.homes[target])['backend']['effort'], 'ultra')
+            life.current = target
+            life.args.skip = ['skills', 'claude-md']
+            life.args.yes = True
+            life.sync('update')
+            self.assertEqual(models.read_choice(dest.read_bytes(), target)['effort'], 'ultra')
+        for effort in ['bad\neffort', 'a b', '', '"escape']:
+            with self.assertRaises(ValueError):
+                models.validate_choice({'model': 'future', 'effort': effort})
+
+    def test_show_all_replaces_choices_and_labels_hidden(self):
+        entries = [{'model': 'visible', 'name': 'Visible', 'efforts': [], 'default': None}]
+        hidden = {'model': 'hidden', 'name': 'Hidden name', 'hidden': True, 'efforts': ['ultra'], 'default': None}
+        fetch = mock.Mock(return_value=entries + [hidden])
+        choice = models.choose({'model': 'visible', 'effort': None}, {'model': 'visible', 'effort': None},
+                               entries, print, mock.Mock(side_effect=['a', '2', '1']), fetch)
+        self.assertEqual(choice, {'model': 'hidden', 'effort': 'ultra'})
+        fetch.assert_called_once_with()
+        self.assertIn('Hidden name [hidden] (hidden)', self.output.getvalue())
+
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):
@@ -447,9 +535,121 @@ for line in sys.stdin:
             self.assertNotIn('SECRET', '\n'.join(output))
             self.assertIn('access unverified', '\n'.join(output))
 
-    def test_claude_catalog_does_not_spawn_cli(self):
+    def test_claude_catalog_without_runtime_home_falls_back(self):
         with mock.patch.object(models.subprocess, 'Popen', side_effect=AssertionError('unexpected process')):
             self.assertEqual(len(models.catalog(ROOT, 'claude', lambda _: None)), 3)
+
+
+    def test_codex_hidden_new_effort_and_missing_capabilities(self):
+        code = """
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    rows = [{'model': 'future', 'displayName': 'Future', 'supportedReasoningEfforts': [{'reasoningEffort': 'ultra'}], 'defaultReasoningEffort': 'ultra'},
+            {'model': 'unknown', 'displayName': {}, 'defaultReasoningEffort': 'high'},
+            {'model': 'hidden', 'hidden': True}]
+    result = {} if request['method'] == 'initialize' else {'data': rows, 'nextCursor': None}
+    print(json.dumps({'id': request['id'], 'result': result}), flush=True)
+"""
+        with self.fake(code):
+            visible = models.codex_catalog()
+            all_rows = models.codex_catalog(include_hidden=True)
+        self.assertEqual([row['model'] for row in visible], ['future', 'unknown'])
+        self.assertEqual(visible[0]['efforts'], ['ultra'])
+        self.assertEqual(visible[1]['name'], 'unknown')
+        self.assertEqual(visible[1]['default'], None)
+        self.assertEqual(visible[1]['efforts'], [])
+        self.assertTrue(all_rows[-1]['hidden'])
+
+    def test_claude_missing_dependencies_and_setup_failure(self):
+        home = self.home / '.claude'
+        for available, expected in [({}, 'Node.js is missing'),
+                                    ({'node': '/node'}, 'CLI is missing'),
+                                    ({'node': '/node', 'claude': '/claude'}, 'npm is missing')]:
+            with mock.patch.object(models.platforms, 'find_command', side_effect=lambda name: available.get(name)):
+                output = []
+                rows = models.catalog(ROOT, 'claude', output.append, home=home)
+                self.assertEqual(rows, models.fallback_catalog(ROOT, 'claude'))
+                self.assertIn(expected, ' '.join(output))
+                self.assertIn('Local fallback', ' '.join(output))
+        with mock.patch.object(models.platforms, 'find_command', side_effect=lambda name: '/' + name), \
+             mock.patch.object(models, 'bounded_run', side_effect=ValueError('SDK setup failed; check npm network')):
+            output = []
+            models.catalog(ROOT, 'claude', output.append, home=home)
+            self.assertIn('SDK setup failed', ' '.join(output))
+
+    def test_claude_normalizes_capabilities_and_bounds_setup(self):
+        home = self.home / '.claude'
+        raw = [{'value': 'new', 'displayName': 'New', 'supportedEffortLevels': ['ultra']},
+               {'value': 'unknown', 'supportsEffort': True}]
+        with mock.patch.object(models.platforms, 'find_command', side_effect=lambda name: '/' + name), \
+             mock.patch.object(models, 'bounded_run', side_effect=[b'', json.dumps(raw).encode()]) as run:
+            entries = models.claude_catalog(ROOT, home)
+        self.assertEqual(entries[0]['efforts'], ['ultra'])
+        self.assertEqual(entries[1]['efforts'], [])
+        self.assertEqual(entries[1]['default'], None)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn('--ignore-scripts', run.call_args_list[0][0][0])
+        self.assertIn('--omit=optional', run.call_args_list[0][0][0])
+        self.assertTrue(all(call[0][1] <= 10 for call in run.call_args_list))
+        self.assertEqual(run.call_args_list[0][0][2], home / 'agentkit/runtime/claude-catalog')
+
+    def test_partial_failed_sdk_install_retries_until_success_marker(self):
+        home = self.home / '.claude'
+        runtime = home / 'agentkit/runtime/claude-catalog'
+        sdk = runtime / 'node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'
+        raw = json.dumps([{'value': 'new'}]).encode()
+        calls = []
+        def partial(args, timeout, cwd=None, **kwargs):
+            calls.append(args)
+            sdk.parent.mkdir(parents=True, exist_ok=True)
+            sdk.write_text('partial installation')
+            raise ValueError('Claude SDK setup failed; check npm network/registry access and retry')
+        with mock.patch.object(models.platforms, 'find_command', side_effect=lambda name: '/' + name):
+            with mock.patch.object(models, 'bounded_run', side_effect=partial):
+                with self.assertRaisesRegex(ValueError, 'setup failed'):
+                    models.claude_catalog(ROOT, home)
+            self.assertFalse((runtime / '.installed-lock-sha256').exists())
+            with mock.patch.object(models, 'bounded_run', side_effect=[b'', raw]) as run:
+                self.assertEqual(models.claude_catalog(ROOT, home)[0]['model'], 'new')
+            self.assertEqual(run.call_args_list[0][0][0][1], 'ci')
+            self.assertTrue((runtime / '.installed-lock-sha256').exists())
+            with mock.patch.object(models, 'bounded_run', return_value=raw) as run:
+                models.claude_catalog(ROOT, home)
+                self.assertEqual(run.call_count, 1)
+                self.assertNotIn('ci', run.call_args[0][0])
+
+    def test_claude_malformed_catalog_falls_back(self):
+        for raw in [{}, [], [{'value': 'x', 'supportedEffortLevels': 'high'}],
+                    [{'value': 'x', 'supportedEffortLevels': False}],
+                    [{'value': 'x', 'supportedEffortLevels': {}}], [{'value': 'bad id'}]]:
+            with mock.patch.object(models, 'bounded_run', side_effect=[b'', json.dumps(raw).encode()]), \
+                 mock.patch.object(models.platforms, 'find_command', side_effect=lambda name: '/' + name):
+                output = []
+                self.assertEqual(models.catalog(ROOT, 'claude', output.append, home=self.home / '.claude'),
+                                 models.fallback_catalog(ROOT, 'claude'))
+
+    def test_claude_helper_fake_sdk_contract(self):
+        import shutil
+        if not shutil.which('node'):
+            self.skipTest('Node not installed; optional helper')
+        proc = subprocess.run(['node', str(ROOT / 'lib/claude_catalog/discover.test.mjs')],
+                              capture_output=True, text=True, timeout=5)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('no user messages or inference', proc.stdout)
+
+    def test_nonzero_npm_reports_setup_remedy_without_provider_output(self):
+        with self.fake('print("PRIVATE PROVIDER DETAIL"); sys.exit(7)\n'):
+            with self.assertRaisesRegex(ValueError, 'setup failed; check npm network/registry access and retry') as error:
+                models.bounded_run(['npm', 'ci'], 1, stage='setup')
+        self.assertNotIn('PRIVATE', str(error.exception))
+
+    def test_bounded_helper_timeout_reaps_tree(self):
+        with self.fake('time.sleep(60)\n'):
+            start = time.monotonic()
+            with self.assertRaisesRegex(ValueError, 'timed out'):
+                models.bounded_run(['node', 'ignored'], 0.2)
+            self.assertLess(time.monotonic() - start, 3)
 
     def test_server_exit_and_non_json_fall_back(self):
         for body in ['sys.exit(1)\n', 'print("not json", flush=True)\n']:
