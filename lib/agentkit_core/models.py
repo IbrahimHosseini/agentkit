@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 import codex
-from . import desktop, platforms
+from . import desktop, platforms, ui
 from .managed import atomic_write, digest, linked_parent, load_manifest
 
 PREFERENCES = 'agentkit/model-overrides.json'
@@ -378,20 +378,34 @@ def yes_no(prompt, read=input):
             return True
 
 
-def choose(current, default, entries, say, read=input, show_all=None):
+def choose(current, default, entries, say, read=input, show_all=None, *, terminal=None):
+    terminal = terminal or ui.Terminal()
     say('Current: ' + describe(current) + '; agentkit default: ' + describe(default))
+    options = []
     for index, item in enumerate(entries, 1):
-        say(f'  {index}. ' + str(item.get('name', item['model'])) + ' [' + item['model'] + ']'
-            + (' (hidden)' if item.get('hidden') else '')
-            + ' — efforts: ' + (', '.join(item['efforts']) or 'inherit from CLI'))
-    if show_all:
-        say('  a. Show all models (including hidden)')
-    say('  m. Enter a model ID manually\n  r. Restore agentkit default\n  Enter: keep current model')
+        name = str(item.get('name', item['model']))
+        hidden = ' (hidden)' if item.get('hidden') else ''
+        efforts = ', '.join(item['efforts']) or 'inherit from CLI'
+        if terminal.rich:
+            options.append((str(index), name + hidden, item['model'], efforts))
+        else:
+            say(f'  {index}. {name} [{item["model"]}]{hidden} — efforts: {efforts}')
+    if terminal.rich:
+        if options:
+            terminal.table(('Key', 'Model', 'Model ID', 'Effort levels'), options, say)
+        actions = [('a', 'Show all models (including hidden)')] if show_all else []
+        actions.extend((('m', 'Enter a model ID manually'), ('r', 'Restore agentkit default'),
+                        ('Enter', 'Keep current model')))
+        terminal.table(('Key', 'Action'), actions, say)
+    else:
+        if show_all:
+            say('  a. Show all models (including hidden)')
+        say('  m. Enter a model ID manually\n  r. Restore agentkit default\n  Enter: keep current model')
     while True:
         answer = read('Model: ').strip().lower()
         if answer == 'a' and show_all:
             entries[:] = show_all()
-            return choose(current, default, entries, say, read)
+            return choose(current, default, entries, say, read, terminal=terminal)
         if answer == 'r':
             return None
         if not answer:
@@ -419,9 +433,13 @@ def choose(current, default, entries, say, read=input, show_all=None):
         say('No configurable effort advertised; inherit from CLI.')
         return {'model': selected, 'effort': None}
     say('Effort (Enter: ' + (default_effort or 'inherit from CLI') + '):')
-    for index, effort in enumerate(efforts, 1):
-        say(f'  {index}. {effort}')
-    say('  0. Inherit from CLI')
+    if terminal.rich:
+        options = [(str(index), effort) for index, effort in enumerate(efforts, 1)]
+        terminal.table(('Key', 'Effort'), options + [('0', 'Inherit from CLI')], say)
+    else:
+        for index, effort in enumerate(efforts, 1):
+            say(f'  {index}. {effort}')
+        say('  0. Inherit from CLI')
     while True:
         answer = read('Effort: ').strip()
         if not answer:
@@ -440,9 +458,9 @@ def snapshot(path, home):
     return path.read_bytes() if path.exists() else None
 
 
-def gather(lifecycle, installing, targets=None):
+def gather(lifecycle, installing, targets=None, *, terminal=None):
     """Build a read-only inventory, excluding files the picker may not edit."""
-    rows, states = [], {}
+    rows, states, skips = [], {}, []
     sources = sorted((lifecycle.root / 'agents').glob('*.md'))
     name_filter = getattr(lifecycle.args, 'agent', None)
     if name_filter and not any(src.stem == name_filter for src in sources):
@@ -489,24 +507,33 @@ def gather(lifecycle, installing, targets=None):
             elif not dest.exists() and (not installing or rel in files):
                 reason = 'agent file is missing'
             if reason:
-                lifecycle.say(f'{target}/{name}: model selection skipped ({reason})')
+                if terminal and terminal.rich:
+                    skips.append((target, name, reason))
+                else:
+                    lifecycle.say(f'{target}/{name}: model selection skipped ({reason})')
                 continue
             default = default_choice(lifecycle.root, src, target)
             data = dest.read_bytes() if dest.exists() else None
             current = read_choice(data, target) if data is not None else preferences.get(name, default)
             rows.append({'target': target, 'name': name, 'rel': rel, 'source': src,
                          'before': data, 'current': current, 'default': default})
+    if skips:
+        lifecycle.say('Model selection skipped')
+        terminal.table(('Target', 'Agent', 'Reason'), skips, lifecycle.say,
+                       target_column=0, group_by=0)
     return rows, states
 
 
-def show_table(rows, say, choices=None):
-    say('Target  Agent  Model  Effort')
+def show_table(rows, say, choices=None, *, terminal=None):
+    terminal = terminal or ui.Terminal()
+    display = []
     for row in rows:
         key = (row['target'], row['name'])
         choice = row['current'] if choices is None else choices.get(key, row['current'])
         if choice is None:
             choice = row['default']
-        say('  '.join((row['target'], row['name'], choice['model'], choice['effort'] or 'inherit from CLI')))
+        display.append((row['target'], row['name'], choice['model'], choice['effort'] or 'inherit from CLI'))
+    terminal.table(('Target', 'Agent', 'Model', 'Effort'), display, say, target_column=0, group_by=0)
 
 
 def configure(lifecycle, installing=False, read=None):
@@ -516,15 +543,21 @@ def configure(lifecycle, installing=False, read=None):
                    and (not platforms.is_windows() or desktop.windows_console_input(sys.stdin)))
     # In quiet interactive mode the user must still see what the questions mean.
     say = print if interactive else lifecycle.say
+    terminal = ui.Terminal(quiet=lifecycle.args.quiet)
     if not interactive:
-        rows, _ = gather(lifecycle, installing)
-        show_table(rows, say)
+        rows, _ = gather(lifecycle, installing, terminal=terminal)
+        show_table(rows, say, terminal=terminal)
         say('Model settings kept. Run agentkit models in a terminal to change them.')
         return None
     try:
         targets = list(lifecycle.targets())
         if len(targets) > 1 and (installing or not lifecycle.args.target):
-            say('Choose model settings target: 1. Claude  2. Codex  3. Both  0. Cancel')
+            if terminal.rich:
+                say('Choose model settings target:')
+                terminal.table(('Key', 'Target'), [('1', 'Claude'), ('2', 'Codex'), ('3', 'Both'),
+                                                   ('0', 'Cancel')], say, target_column=1)
+            else:
+                say('Choose model settings target: 1. Claude  2. Codex  3. Both  0. Cancel')
             while True:
                 answer = read('Target: ').strip().lower()
                 if answer in ('0', 'c', 'cancel', ''):
@@ -536,8 +569,8 @@ def configure(lifecycle, installing=False, read=None):
                     targets = selected
                     break
                 say('Choose an installed target or cancel.')
-        rows, states = gather(lifecycle, installing, targets)
-        show_table(rows, say)
+        rows, states = gather(lifecycle, installing, targets, terminal=terminal)
+        show_table(rows, say, terminal=terminal)
         if not rows:
             say('No eligible managed agents to configure.')
             return None
@@ -548,9 +581,9 @@ def configure(lifecycle, installing=False, read=None):
             target = row['target']
             if target not in catalogs:
                 catalogs[target] = catalog(lifecycle.root, target, say, home=None if lifecycle.args.dry_run else lifecycle.homes[target])
-            say('\n' + target + ' / ' + row['name'])
+            say('\n' + terminal.target_label(target) + ' / ' + row['name'])
             show_all = (lambda: catalog(lifecycle.root, target, say, home=lifecycle.homes[target], include_hidden=True)) if target == 'codex' else None
-            value = choose(row['current'], row['default'], catalogs[target], say, read, show_all)
+            value = choose(row['current'], row['default'], catalogs[target], say, read, show_all, terminal=terminal)
             # An unchanged choice must not accidentally pin a source default.
             if value != row['current'] or (value is None and row['name'] in states[target]['agents']):
                 choices[(target, row['name'])] = value
@@ -558,7 +591,7 @@ def configure(lifecycle, installing=False, read=None):
             say('No model changes selected.')
             return None
         say('\nProposed model settings:')
-        show_table(rows, say, choices)
+        show_table(rows, say, choices, terminal=terminal)
         if not yes_no('Apply changes? [y/N] ', read):
             say('Model changes cancelled.')
             return None

@@ -42,13 +42,29 @@ req_ask() {
 }
 
 req_ui() {
+  local columns="${COLUMNS:-}" size
+  REQ_TABLE=0 REQ_BAR='|' REQ_JOIN='+' REQ_DASH='-'
   case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
-    *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) REQ_OKM="✓"; REQ_BADM="✗" ;;
+    *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*)
+      REQ_OKM="✓"; REQ_BADM="✗"; REQ_BAR='│'; REQ_JOIN='┼'; REQ_DASH='─' ;;
     *) REQ_OKM="+"; REQ_BADM="x" ;;
   esac
-  REQ_G=""; REQ_R=""; REQ_Z=""
-  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  REQ_G="" REQ_R="" REQ_Z="" REQ_CLAUDE="" REQ_CODEX=""
+  if [ -t 1 ] && [ "${TERM:-}" != dumb ]; then
+    REQ_TABLE=1
+    if ! [[ "$columns" =~ ^[1-9][0-9]{0,4}$ ]]; then
+      { size="$(stty size <&3 2>/dev/null)" || size=''; } 3<&1
+      columns="${size##* }"
+    fi
+    if [[ "$columns" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$columns" -lt 38 ]; then REQ_TABLE=2; fi
+  fi
+  if [ "$REQ_TABLE" != 0 ] && [ -z "${NO_COLOR:-}" ] && [ "${QUIET:-0}" != 1 ]; then
     REQ_G=$'\033[32m'; REQ_R=$'\033[31m'; REQ_Z=$'\033[0m'
+    case "${TERM:-}:${COLORTERM:-}" in
+      *256color*:* | *:truecolor | *:24bit)
+        REQ_CLAUDE=$'\033[38;5;173m'; REQ_CODEX=$'\033[38;5;73m' ;;
+      *) REQ_CLAUDE=$'\033[33m'; REQ_CODEX=$'\033[36m' ;;
+    esac
   fi
 }
 
@@ -116,21 +132,63 @@ req_wants() {
 # shellcheck disable=SC2154
 req_met() { [ "$REQ_S_git" = ok ] && [ "$REQ_S_python3" = ok ] && { [ "${REQ_BOOTSTRAP:-0}" = 1 ] || req_agent_ok; }; }
 
+# The final column stays open so long diagnostic text and commands can wrap.
+req_table_row() {
+  local name="$1" note="$2" status="${3:-}" color="${4:-}" accent='' reset='' padding
+  case "$name" in
+    claude) accent="$REQ_CLAUDE" ;;
+    codex) accent="$REQ_CODEX" ;;
+  esac
+  [ -z "$accent" ] || reset="$REQ_Z"
+  note="${note//[[:cntrl:]]/ }"
+  if [ "$REQ_TABLE" = 2 ]; then
+    printf '  %s%s%s' "$accent" "$name" "$reset"
+    [ -z "$status" ] || printf ' %s %s%s%s' "$REQ_BAR" "$color" "$status" "$REQ_Z"
+    printf '\n    %s %s\n' "$REQ_BAR" "$note"
+    return
+  fi
+  printf -v padding '%*s' "$((8 - ${#name}))" ''
+  printf '  %s%s%s%s %s ' "$accent" "$name" "$reset" "$padding" "$REQ_BAR"
+  if [ -n "$status" ]; then
+    printf -v padding '%*s' "$((8 - ${#status}))" ''
+    printf '%s%s%s%s %s ' "$color" "$status" "$REQ_Z" "$padding" "$REQ_BAR"
+  fi
+  printf '%s\n' "$note"
+}
+
+req_table_heading() {
+  [ "${REQ_TABLE:-0}" = 1 ] || return 0
+  local start='---------' segment='----------' end='---------------'
+  start="${start//-/$REQ_DASH}"; segment="${segment//-/$REQ_DASH}"; end="${end//-/$REQ_DASH}"
+  if [ "$#" = 3 ]; then
+    printf '  %-8s %s %-8s %s %s\n' "$1" "$REQ_BAR" "$2" "$REQ_BAR" "$3"
+    printf '  %s%s%s%s%s\n' "$start" "$REQ_JOIN" "$segment" "$REQ_JOIN" "$end"
+  else
+    printf '  %-8s %s %s\n' "$1" "$REQ_BAR" "$2"
+    printf '  %s%s%s\n' "$start" "$REQ_JOIN" "$end"
+  fi
+}
+
 req_row() {
-  local mark="$1" color="$2" name="$3" note="$4"
-  printf '  %s%s%s %-8s %s\n' "$color" "$mark" "$REQ_Z" "$name" "$note"
+  local mark="$1" color="$2" name="$3" note="$4" status="$5"
+  if [ "$REQ_TABLE" = 0 ]; then
+    printf '  %s%s%s %-8s %s\n' "$color" "$mark" "$REQ_Z" "$name" "$note"
+  else
+    req_table_row "$name" "$note" "$status" "$color"
+  fi
 }
 
 req_list() {
   local t s v note
   echo "Requirements:"
+  req_table_heading Tool Status Details
   for t in git python3 claude codex gh bun; do
     if [ "${REQ_BOOTSTRAP:-0}" = 1 ]; then case "$t" in git | python3) ;; *) continue ;; esac; fi
     eval "s=\$REQ_S_$t; v=\$REQ_V_$t"
     case "$t:$s" in
-      *:broken) req_row "$REQ_BADM" "$REQ_R" "$t" "--version failed: $v; reinstall or fix this command" ;;
-      python3:old) req_row "$REQ_BADM" "$REQ_R" "$t" "found $v, need 3.9 or newer" ;;
-      *:ok) req_row "$REQ_OKM" "$REQ_G" "$t" "$v" ;;
+      *:broken) req_row "$REQ_BADM" "$REQ_R" "$t" "--version failed: $v; reinstall or fix this command" Broken ;;
+      python3:old) req_row "$REQ_BADM" "$REQ_R" "$t" "found $v, need 3.9 or newer" Outdated ;;
+      *:ok) req_row "$REQ_OKM" "$REQ_G" "$t" "$v" Ready ;;
       *)
         case "$t" in
           git | python3) note="required" ;;
@@ -143,7 +201,7 @@ req_list() {
           bun) note="required when gstack installation is accepted" ;;
           *) note="optional" ;;
         esac
-        req_row "$REQ_BADM" "$REQ_R" "$t" "not found, $note"
+        req_row "$REQ_BADM" "$REQ_R" "$t" "not found, $note" Missing
         ;;
     esac
   done
@@ -189,19 +247,29 @@ req_plan() {
 }
 
 req_suggest_one() {
-  local t="$1"
+  local t="$1" note
   req_plan "$t"
   case "$REQ_KIND" in
-    pm) printf '  %-8s %s\n' "$t" "$REQ_CMD" ;;
-    script) printf '  %-8s %s   (downloads and runs a remote script)\n' "$t" "$REQ_CMD" ;;
+    pm) note="$REQ_CMD" ;;
+    script) note="$REQ_CMD   (downloads and runs a remote script)" ;;
     *)
       if [ "$REQ_OS" = mac ] && [ "$REQ_PM" = none ]; then
-        printf '  %-8s install Homebrew (https://brew.sh), or get it from %s\n' "$t" "$REQ_LINK"
+        note="install Homebrew (https://brew.sh), or get it from $REQ_LINK"
       else
-        printf '  %-8s install it from %s\n' "$t" "$REQ_LINK"
+        note="install it from $REQ_LINK"
       fi
       ;;
   esac
+  if [ "${REQ_TABLE:-0}" = 0 ]; then
+    printf '  %-8s %s\n' "$t" "$note"
+  else
+    req_table_row "$t" "$note"
+  fi
+}
+
+req_suggest_heading() {
+  echo "How to install what is missing:"
+  req_table_heading Tool Installation
 }
 
 req_suggest() {
@@ -210,11 +278,11 @@ req_suggest() {
     if [ "${REQ_BOOTSTRAP:-0}" = 1 ]; then case "$t" in git | python3) ;; *) continue ;; esac; fi
     eval "s=\$REQ_S_$t"
     [ "$s" = ok ] && continue
-    [ "$any" = 0 ] && { echo "How to install what is missing:"; any=1; }
+    [ "$any" = 0 ] && { req_suggest_heading; any=1; }
     req_suggest_one "$t"
   done
   if [ "${REQ_BOOTSTRAP:-0}" != 1 ] && ! req_agent_ok; then
-    [ "$any" = 0 ] && echo "How to install what is missing:"
+    [ "$any" = 0 ] && req_suggest_heading
     for t in claude codex; do
       eval "s=\$REQ_S_$t"
       if [ "$s" != ok ] && req_wants "$t"; then req_suggest_one "$t"; fi

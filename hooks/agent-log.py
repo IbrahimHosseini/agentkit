@@ -11,7 +11,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
+import textwrap
 import uuid
 from datetime import datetime, timezone
 
@@ -464,24 +466,76 @@ def cmd_add(a):
     return 0
 
 
+class LogReport:
+    """Keep human-readable sections in the standalone log command."""
+
+    def __init__(self):
+        self.terminal = sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
+        self.color = self.terminal and not os.environ.get("NO_COLOR")
+        self.encoding = sys.stdout.encoding or "ascii"
+        self.width = shutil.get_terminal_size().columns if self.terminal else 80
+        self.open = False
+        try:
+            "┌├│└─".encode(self.encoding)
+            self.top, self.branch, self.edge, self.bottom, self.dash = "┌├│└─"
+        except UnicodeEncodeError:
+            self.top, self.branch, self.edge, self.bottom, self.dash = "++|+-"
+
+    def line(self, text, prefix, continuation, bold=False):
+        clean = CONTROL.sub(" ", text).encode(self.encoding, errors="backslashreplace").decode(self.encoding)
+        width = max(1, self.width - max(len(prefix), len(continuation)))
+        lines = textwrap.wrap(clean, width, break_on_hyphens=False) or [""]
+        for index, part in enumerate(lines):
+            if bold and self.color:
+                part = "\033[1m" + part + "\033[0m"
+            print((continuation if index else prefix) + part)
+
+    def agent(self, name):
+        label = "agent: " + name
+        if self.terminal:
+            self.finish()
+            self.open = True
+            self.line(label, self.top + " ", self.edge + " ", bold=True)
+        else:
+            print(label)
+
+    def rule(self, summary):
+        if self.terminal:
+            self.line(summary, self.branch + " ", self.edge + " ")
+        else:
+            print("  " + summary)
+
+    def entry(self, detail):
+        if self.terminal:
+            self.line("- " + detail, self.edge + "   ", self.edge + "     ")
+        else:
+            print("    - " + detail)
+
+    def finish(self):
+        if self.open:
+            print(self.bottom + self.dash * min(35, self.width - 1))
+            self.open = False
+
+
 def cmd_report(a):
     issues, resolved = read_log()
     groups = {}
     for r in issues:
         if a.all or r["id"] not in resolved:
             groups.setdefault((str(r.get("agent_type")), str(r.get("rule"))), []).append(r)
-    last_agent = None
+    view, last_agent = LogReport(), None
     for (agent, rule), rs in sorted(groups.items()):
         rs.sort(key=lambda r: r.get("ts", ""))
         if agent != last_agent:
-            print("agent: " + agent)
+            view.agent(agent)
             last_agent = agent
         sev = "warn" if any(r.get("severity") == "warn" for r in rs) else "info"
-        print("  rule: %s (%s)  count: %d  first: %s  last: %s" % (rule, sev, len(rs), rs[0].get("ts"), rs[-1].get("ts")))
+        view.rule("rule: %s (%s)  count: %d  first: %s  last: %s" % (rule, sev, len(rs), rs[0].get("ts"), rs[-1].get("ts")))
         for r in rs:
             tag = " [resolved]" if r["id"] in resolved else ""
-            print("    - %s%s %s %s | %s | %s" % (r["id"], tag, r.get("ts"), r.get("source"),
+            view.entry("%s%s %s %s | %s | %s" % (r["id"], tag, r.get("ts"), r.get("source"),
                                                  r.get("description") or "-", " ".join(str(r.get("evidence")).split())))
+    view.finish()
     return 0
 
 
@@ -629,16 +683,17 @@ def cmd_merge(a):
                 if t and t not in m["samples"] and len(m["samples"]) < 3:
                     m["samples"].append(t)
     print("files: %d  reporters: %d" % (nfiles, len({d["reporter"] for d in exports})))
-    last_agent = None
+    view, last_agent = LogReport(), None
     order = sorted(merged.items(), key=lambda kv: (-len(kv[1]["reporters"]), -kv[1]["count"], kv[0]))
     for (agent, rule), m in order:
         if agent != last_agent:
-            print("agent: " + agent)
+            view.agent(agent)
             last_agent = agent
-        print("  rule: %s (%s)  count: %d  reporters: %d  first: %s  last: %s" % (
+        view.rule("rule: %s (%s)  count: %d  reporters: %d  first: %s  last: %s" % (
             rule, m["sev"], m["count"], len(m["reporters"]), m["first"], m["last"]))
         for t in m["samples"]:
-            print("    - " + t)
+            view.entry(t)
+    view.finish()
     return 0
 
 

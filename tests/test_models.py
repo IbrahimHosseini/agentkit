@@ -391,6 +391,25 @@ class ModelTests(unittest.TestCase):
                 self.assertIsNone(self.batch(life, [answer]))
         self.assertEqual(tree(self.home), before)
 
+    def test_terminal_model_picker_shows_proposal_and_preserves_files_on_cancel(self):
+        life = self.lifecycle('models', '--target', 'both', '--agent', 'backend')
+        self.seed('claude', life=life)
+        self.seed('codex', life=life)
+        before = tree(self.home)
+        with mock.patch.object(self.output, 'isatty', return_value=True), \
+             mock.patch.dict(os.environ, TERM='xterm-256color', NO_COLOR='1', COLUMNS='100'):
+            batch = self.batch(life, ['y', '1', '2', '1', '1', 'n'])
+        self.assertIsNone(batch)
+        self.assertEqual(tree(self.home), before)
+        output = self.output.getvalue()
+        self.assertIn('│ Model ID', output)
+        self.assertIn('│ Effort ', output)
+        proposal = output.split('Proposed model settings:', 1)[1]
+        self.assertRegex(proposal, r'│ claude\s+│ backend\s+│ opus\s+│ medium\s+│')
+        self.assertRegex(proposal, r'│ codex\s+│ backend\s+│ gpt-6\.1-sol\s+│ high\s+│')
+        self.assertIn('Model changes cancelled.', proposal)
+        self.assertNotIn('\x1b', output)
+
     def test_install_model_subset_does_not_change_installation_targets(self):
         life = self.lifecycle('install', '--target', 'both')
         life.args.agent = 'backend'
