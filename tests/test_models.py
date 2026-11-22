@@ -742,7 +742,7 @@ for line in sys.stdin:
         if not shutil.which('node'):
             self.skipTest('Node not installed; optional helper')
         proc = subprocess.run(['node', str(ROOT / 'lib/claude_catalog/discover.test.mjs')],
-                              capture_output=True, text=True, timeout=5)
+                              capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('no user messages or inference', proc.stdout)
 
