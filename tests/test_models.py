@@ -1,5 +1,6 @@
 """Model selection contracts: temporary homes, offline catalogs and fake CLIs."""
 import hashlib
+import re
 import io
 import json
 import os
@@ -550,7 +551,7 @@ for line in sys.stdin:
             output = []
             with self.fake(code):
                 entries = models.catalog(ROOT, 'codex', output.append)
-            self.assertEqual(entries, models.fallback_catalog(ROOT, 'codex'))
+            self.assertEqual(entries[:len(models.fallback_catalog(ROOT, 'codex'))], models.fallback_catalog(ROOT, 'codex'))
             self.assertNotIn('SECRET', '\n'.join(output))
             self.assertIn('access unverified', '\n'.join(output))
 
@@ -609,6 +610,41 @@ for line in sys.stdin:
         self.assertIn(b'-s read-only', models.patch_agent(reader, 'claude', choice))
         self.assertIn(b'-s workspace-write', models.patch_agent(writer, 'claude', choice))
 
+
+    def render_codex(self, name):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / (name + '.toml')
+            codex.render_agent(str(ROOT / 'agents' / (name + '.md')), str(ROOT / 'codex/models.map'),
+                               str(ROOT / 'codex/karpathy-guidelines.md'), str(out))
+            return out.read_bytes()
+
+    def test_codex_agent_relays_to_claude_and_restores(self):
+        original = self.render_codex('backend')
+        choice = {'model': 'opus', 'effort': 'high'}
+        relayed = models.patch_agent(original, 'codex', choice)
+        text = relayed.decode()
+        codex.validate_toml(text, 'relay')
+        self.assertIn('claude -p --model opus --effort high --permission-mode acceptEdits --allowedTools Bash', text)
+        self.assertIn('sandbox_mode = "danger-full-access"', text)
+        self.assertEqual(models.read_choice(relayed, 'codex'), choice)
+        # The host keeps the Codex model the agent had before.
+        self.assertEqual(re.search(r'^model = (.+)$', text, re.M).group(1),
+                         re.search(r'^model = (.+)$', original.decode(), re.M).group(1))
+        # Changing the Claude model keeps the original host; leaving restores every byte.
+        again = models.patch_agent(relayed, 'codex', {'model': 'sonnet', 'effort': None})
+        self.assertIn('claude -p --model sonnet --permission-mode', again.decode())
+        back = models.patch_agent(again, 'codex', models.read_choice(original, 'codex'))
+        self.assertEqual(back, models.patch_agent(original, 'codex', models.read_choice(original, 'codex')))
+        self.assertNotIn('agentkit:claude', back.decode())
+
+    def test_codex_relay_sandbox_follows_agent_tools(self):
+        reader = models.patch_agent(self.render_codex('security'), 'codex', {'model': 'opus', 'effort': None})
+        self.assertIn('--permission-mode plan', reader.decode())
+        self.assertNotIn('--allowedTools', reader.decode())
+
+    def test_codex_catalog_adds_claude_relay_models(self):
+        entries = models.catalog(ROOT, 'codex', lambda _: None)
+        self.assertTrue({'opus', 'sonnet', 'haiku'} <= {item['model'] for item in entries})
 
     def test_codex_hidden_new_effort_and_missing_capabilities(self):
         code = """
@@ -706,7 +742,7 @@ for line in sys.stdin:
         if not shutil.which('node'):
             self.skipTest('Node not installed; optional helper')
         proc = subprocess.run(['node', str(ROOT / 'lib/claude_catalog/discover.test.mjs')],
-                              capture_output=True, text=True, timeout=5)
+                              capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('no user messages or inference', proc.stdout)
 

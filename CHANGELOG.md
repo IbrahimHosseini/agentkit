@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-22
+
+### Added
+
+- The Codex model picker lists Claude models. A Codex agent set to one relays its task to `claude -p` with the chosen model and effort and runs with `danger-full-access`, because the default Codex sandbox blocks the network and `~/.claude`. Switching back to a Codex model restores the agent.
+
 ### Changed
 
 - The `supervisor` agent is split into `supervisor-plan` (PLAN mode) and `supervisor-review` (REVIEW mode), so each can use its own model and effort. Both default to opus/high. `agentkit update` removes the old `supervisor` file unless you edited it, and the workflow blocks point at the new agents. Select models with `agentkit models`.
@@ -138,7 +144,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/IbrahimHosseini/agentkit/compare/dc29d80cfa3dd02991f5eeeeeb13c51e88cf555a...v0.5.0

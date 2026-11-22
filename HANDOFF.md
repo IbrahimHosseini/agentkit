@@ -1,3 +1,9 @@
+# Current work: prepare agentkit 0.8.0
+
+Work date: 2026-11-22. Release branch `codex/split-supervisor` (PR #14). Version, plugin metadata and changelog are `0.8.0`. The release splits `supervisor` into `supervisor-plan` and `supervisor-review` (17 agents) and lets Codex agents use Claude models through a `claude -p` relay (host runs with `danger-full-access`). Not verified: a real authenticated `claude -p` run; only flag acceptance was checked. Publication is pending: wait for the user to merge PR #14, then tag the merged main commit `v0.8.0` and publish the GitHub release.
+
+---
+
 # Current work: prepare agentkit 0.7.0
 
 Work date: 2026-11-22. Release branch `codex/release-0.7.0` starts from `origin/main` (`a39693d`, PR #12 merged). Version, plugin metadata and changelog are `0.7.0`. The release adds OpenAI models in the Claude picker: a Claude agent set to one stays on a Claude host model and relays its task to `codex exec`; switching back restores the agent. It also includes the Codex role file fix (`name` and `description` first) and the quiet-update notification fix. The README Features list and the OpenAI section describe the relay. Publication is pending: open the version PR, wait for the user to merge it, then tag the merged main commit `v0.7.0` and publish the GitHub release. No tag exists yet.

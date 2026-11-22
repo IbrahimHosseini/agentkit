@@ -33,6 +33,34 @@ RELAY_START = '<!-- agentkit:codex:start model={model} effort={effort} sandbox={
 RELAY_RE = re.compile(r'<!-- agentkit:codex:start model=(\S+) effort=(\S+) sandbox=(\S+) tools=(\S*) -->\n.*?<!-- agentkit:codex:end -->\n*', re.S)
 
 
+# The reverse: a Codex agent set to a Claude model stays on its own Codex model
+# (the host) and relays its work to `claude -p`. The host needs full access because
+# the default Codex sandbox blocks the network and writes to ~/.claude.
+CLAUDE_MODEL = re.compile(r'^(opus|sonnet|haiku|fable|claude-)', re.I)
+CLAUDE_RELAY_RE = re.compile(r'<!-- agentkit:claude:start model=(\S+) effort=(\S+) host_model=(\S+) host_effort=(\S+) host_sandbox=(\S+) -->\n.*?<!-- agentkit:claude:end -->\n*', re.S)
+
+
+def is_claude(model):
+    return bool(CLAUDE_MODEL.match(model or ''))
+
+
+def claude_relay_block(model, effort, host_model, host_effort, host_sandbox):
+    write = host_sandbox != 'read-only'
+    command = 'claude -p --model ' + model + (' --effort ' + effort if effort else '')
+    command += ' --permission-mode ' + ('acceptEdits --allowedTools Bash' if write else 'plan')
+    return '\n'.join([
+        '<!-- agentkit:claude:start model=%s effort=%s host_model=%s host_effort=%s host_sandbox=%s -->'
+        % (model, effort or 'inherit', host_model, host_effort or 'inherit', host_sandbox),
+        'You are a relay. This agent runs on the Claude model ' + model
+        + (' with effort ' + effort if effort else '') + ' through the Claude Code CLI.',
+        'Do not do the work yourself. Do this instead:',
+        '1. Write a prompt file in a temporary directory. It holds the worker instructions (everything after the end marker of this block) and then the assignment you received.',
+        '2. Run: `' + command + ' < prompt-file`',
+        '3. Return the final output of that run and the real output of its checks. Add nothing of your own.',
+        'If `claude` is missing, not logged in, or exits with an error, stop. Report the exact error and that no work was done.',
+        '<!-- agentkit:claude:end -->', ''])
+
+
 def is_openai(model):
     return bool(OPENAI_MODEL.match(model or ''))
 
@@ -103,6 +131,10 @@ def read_choice(data, target):
             return validate_choice({'model': relay.group(1), 'effort': None if effort == 'inherit' else effort})
         return validate_choice({'model': fm.get('model'), 'effort': fm.get('effort') or None})
     values = {}
+    match = re.search(r'^developer_instructions = (.+)$', text, re.M)
+    relay = CLAUDE_RELAY_RE.search(json.loads(match.group(1))) if match else None
+    if relay:
+        return validate_choice({'model': relay.group(1), 'effort': None if relay.group(2) == 'inherit' else relay.group(2)})
     # Generated agents use one JSON-compatible TOML string per field.
     for key, name in [('model', 'model'), ('model_reasoning_effort', 'effort')]:
         match = re.search(r'^' + key + r' = (.+)$', text, re.M)
@@ -150,10 +182,35 @@ def patch_agent(data, target, choice):
         text = ''.join(lines[:1] + middle + fields + [lines[end]]) + rest
         codex.parse_md(text, 'rendered agent')
     else:
-        fields = ['model = ' + codex.q(choice['model']) + newline]
-        if choice['effort'] is not None:
-            fields.append('model_reasoning_effort = ' + codex.q(choice['effort']) + newline)
-        kept = [line for line in lines if not re.match(r'^(model|model_reasoning_effort)\s*=', line)]
+        def value(key):
+            found = re.search(r'^' + key + r' = (.+)$', text, re.M)
+            return json.loads(found.group(1)) if found else None
+        instructions = value('developer_instructions')
+        previous = CLAUDE_RELAY_RE.search(instructions or '')
+        relay = is_claude(choice['model'])
+        if previous:
+            host = {'model': previous.group(3), 'effort': None if previous.group(4) == 'inherit' else previous.group(4),
+                    'sandbox': previous.group(5)}
+        else:
+            host = {'model': value('model'), 'effort': value('model_reasoning_effort'), 'sandbox': value('sandbox_mode')}
+        if instructions is not None and (relay or previous):
+            instructions = CLAUDE_RELAY_RE.sub('', instructions)
+            if relay:
+                instructions = claude_relay_block(choice['model'], choice['effort'], host['model'], host['effort'], host['sandbox']) + instructions
+        model, effort = (host['model'], host['effort']) if relay else (choice['model'], choice['effort'])
+        fields = ['model = ' + codex.q(model) + newline]
+        if effort is not None:
+            fields.append('model_reasoning_effort = ' + codex.q(effort) + newline)
+        sandbox = 'danger-full-access' if relay else host['sandbox']
+        kept = []
+        for line in lines:
+            if re.match(r'^(model|model_reasoning_effort)\s*=', line):
+                continue
+            if instructions is not None and re.match(r'^developer_instructions\s*=', line):
+                line = 'developer_instructions = ' + codex.q(instructions) + newline
+            elif sandbox is not None and re.match(r'^sandbox_mode\s*=', line):
+                line = 'sandbox_mode = ' + codex.q(sandbox) + newline
+            kept.append(line)
         text = ''.join(fields + kept)
         codex.validate_toml(text, 'rendered agent')
     return text.encode('utf-8')
@@ -423,17 +480,24 @@ def openai_entries(root, say):
     return [dict(item, source='local fallback (relay)') for item in fallback_catalog(root, 'codex')]
 
 
+def claude_entries(root, say):
+    say('Claude models for Codex agents come from the local list (unverified). Use m to enter another ID.')
+    return [dict(item, source='local fallback (relay)') for item in fallback_catalog(root, 'claude')]
+
+
 def catalog(root, target, say, home=None, include_hidden=False):
     try:
         result = codex_catalog(include_hidden=include_hidden) if target == 'codex' else claude_catalog(root, home)
         say('Models reported by ' + target + ' (access is not guaranteed).')
-        return result + openai_entries(root, say) if target == 'claude' else result
+        if target == 'codex':
+            return result + claude_entries(root, say)
+        return result + openai_entries(root, say)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # SDK stderr/provider output is deliberately never printed.
         reason = str(exc) if isinstance(exc, ValueError) else 'helper could not start; check installed CLI and runtime'
         say('Live model discovery unavailable: ' + reason + '.')
     say('Local fallback: known models; access unverified. Check CLI login, version and account availability.')
-    return fallback_catalog(root, target) + (openai_entries(root, say) if target == 'claude' else [])
+    return fallback_catalog(root, target) + (openai_entries(root, say) if target == 'claude' else claude_entries(root, say))
 
 
 def describe(choice):
