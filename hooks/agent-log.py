@@ -418,7 +418,7 @@ def run_checks(inp):
             found.append(("report-incomplete", "info", "final report lacks: " + ", ".join(miss), None))
 
     # R10 spawned agents
-    if atype not in ("security", "supervisor"):
+    if atype not in ("security", "supervisor-plan", "supervisor-review"):
         for i, n, u in uses:
             if n == "Agent":
                 found.append(("spawned-agent", "info",

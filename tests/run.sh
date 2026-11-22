@@ -2481,14 +2481,14 @@ t_codex_rendered_agents_have_no_claude_paths() {
     if grep -qF '.claude/' "$f"; then bad="$bad $(basename "$f")"; fi
   done
   assert_eq "$bad" "" "rendered agents that still mention .claude/"
-  # supervisor.md reads the agent definitions: it must point at the Codex ones.
+  # supervisor-plan.md reads the agent definitions: it must point at the Codex ones.
   # These assertions match literal tilde paths in the instructions, not expanded HOME paths.
   # shellcheck disable=SC2088
-  assert_grep "$AKH/agents/supervisor.md" "~/.claude/agents/*.md"
+  assert_grep "$AKH/agents/supervisor-plan.md" "~/.claude/agents/*.md"
   # shellcheck disable=SC2088
-  assert_grep "$CODEX/agents/supervisor.toml" "~/.codex/agents/*.toml"
+  assert_grep "$CODEX/agents/supervisor-plan.toml" "~/.codex/agents/*.toml"
   # shellcheck disable=SC2088
-  assert_nogrep "$CODEX/agents/supervisor.toml" "~/.claude"
+  assert_nogrep "$CODEX/agents/supervisor-plan.toml" "~/.claude"
 }
 
 t_codex_effort_values() {

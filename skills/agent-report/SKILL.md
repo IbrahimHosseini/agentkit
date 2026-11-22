@@ -63,19 +63,19 @@ Use it when the current folder has `.claude-plugin/plugin.json` with `"name": "a
 
 ## Rule-to-line table
 
-Search for the quoted text with grep in `~/.claude/agents`. Most agent files have the same sentences in "Rules for every task". "Do not commit. Do not push." and "Do not run destructive commands ..." are in all files. "Edit only the files named in your assignment." is not in debugger.md, researcher.md, security.md and supervisor.md. "An install is risky unless ..." is not in supervisor.md.
+Search for the quoted text with grep in `~/.claude/agents`. Most agent files have the same sentences in "Rules for every task". "Do not commit. Do not push." and "Do not run destructive commands ..." are in all files. "Edit only the files named in your assignment." is not in debugger.md, researcher.md, security.md, supervisor-plan.md and supervisor-review.md. "An install is risky unless ..." is not in supervisor-plan.md or supervisor-review.md.
 
 | Rule | Where the rule lives |
 |---|---|
-| install-unapproved, install-outside-list, install-restore | The "An install is risky unless ..." sentence in "Rules for every task". supervisor.md: no line yet. Propose one. |
+| install-unapproved, install-outside-list, install-restore | The "An install is risky unless ..." sentence in "Rules for every task". supervisor-plan.md and supervisor-review.md: no line yet. Propose one. |
 | git-write | "Do not commit. Do not push." |
 | destructive | "Do not run destructive commands ..." |
-| scope | "Edit only the files named in your assignment." Exceptions: debugger.md: "If the assignment names files, edit only those files." security.md and supervisor.md: "Do not edit project files." researcher.md: "Do not edit files." |
+| scope | "Edit only the files named in your assignment." Exceptions: debugger.md: "If the assignment names files, edit only those files." security.md, supervisor-plan.md and supervisor-review.md: "Do not edit project files." researcher.md: "Do not edit files." |
 | secret-in-code | backend.md: "Never put secrets in code ...". devops.md: "Do not add secrets to files." Other agents: no line yet. Propose one in "Rules for every task". |
 | browser-not-stopped | frontend.md and seo.md: "After a browser check, run the skill's stop command." |
 | skill-missing | seo.md: "To measure a page, load the benchmark skill ..." |
 | cso-before-audit | security.md: "Load cso before you run any audit command." |
-| report-incomplete | The line that starts with "Report:". Most agents have "Report: what you did, files changed, verification result ...". debugger.md, researcher.md and security.md have their own wording. supervisor.md has no such line. |
+| report-incomplete | The line that starts with "Report:". Most agents have "Report: what you did, files changed, verification result ...". debugger.md, researcher.md and security.md have their own wording. supervisor-plan.md and supervisor-review.md have no such line. |
 | spawned-agent | The `tools:` line in the frontmatter |
 | tool-error | No fixed line. Note only, unless the count is 2 or more. |
 | review-fix | The file and line that the evidence names |

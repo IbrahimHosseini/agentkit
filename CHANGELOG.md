@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The `supervisor` agent is split into `supervisor-plan` (PLAN mode) and `supervisor-review` (REVIEW mode), so each can use its own model and effort. Both default to opus/high. `agentkit update` removes the old `supervisor` file unless you edited it, and the workflow blocks point at the new agents. Select models with `agentkit models`.
+
 ## [0.7.0] - 2026-11-22
 
 ### Added
