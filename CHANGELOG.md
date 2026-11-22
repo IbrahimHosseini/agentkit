@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-22
+
 ### Added
 
 - The Claude model picker lists OpenAI models. A Claude agent set to one relays its task to `codex exec` with the chosen model and effort. Switching back to a Claude model restores the agent.
@@ -132,7 +134,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/IbrahimHosseini/agentkit/compare/dc29d80cfa3dd02991f5eeeeeb13c51e88cf555a...v0.5.0
 [0.4.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.3.1...v0.4.0
