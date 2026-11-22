@@ -11,15 +11,15 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platforms">
 </p>
 
-agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 16 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes on POSIX systems. One command installs it. One command updates it.
+agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 17 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes on POSIX systems. One command installs it. One command updates it.
 
-The agents follow one workflow. A supervisor plans the work. You approve the plan. Workers do the parts. The supervisor reviews the result. The hook records when an agent breaks a rule, so the team can improve the agent files.
+The agents follow one workflow. `supervisor-plan` plans the work. You approve the plan. Workers do the parts. `supervisor-review` reviews the result. The hook records when an agent breaks a rule, so the team can improve the agent files.
 
 ## Features
 
-- **16 specialized agents** for planning, development, design, testing, security, documentation, and content.
+- **17 specialized agents** for planning, development, design, testing, security, documentation, and content.
 - **Claude Code and Codex support** from the same agent sources, with Codex model and sandbox settings generated during install.
-- **A shared workflow** with supervisor planning, your approval, parallel workers, and review with up to two fix rounds.
+- **A shared workflow** with a planning agent, your approval, parallel workers, and review with up to two fix rounds.
 - **Three bundled skills:** `agent-report`, `security-audit`, and `write-swift`.
 - **macOS, Linux, and native Windows support** through a shared Python lifecycle engine. Optional POSIX integrations are listed below.
 - **Per-agent model and effort selection** during interactive installation or later with `agentkit models`. Choices survive updates.
@@ -288,14 +288,14 @@ The hooks, gstack, and Karpathy plugin rows below apply to POSIX systems only. N
 
 | Item | Where | Step name |
 |---|---|---|
-| 16 agent files | `~/.claude/agents/` | (always) |
+| 17 agent files | `~/.claude/agents/` | (always) |
 | Skills `agent-report`, `security-audit`, `write-swift` | `~/.claude/skills/` | `skills` |
 | Workflow block between `<!-- agentkit:start -->` and `<!-- agentkit:end -->` | `~/.claude/CLAUDE.md` | `claude-md` |
 | SubagentStop hook (agent log) | `~/.claude/settings.json` | `hooks` |
 | SessionStart hook (auto-update, enabled by default for user installations) | `~/.claude/settings.json` | `hooks` |
 | gstack (git clone, then its `./setup --host claude`) | `~/.claude/skills/gstack` | `gstack` |
 | karpathy-guidelines plugin | through `claude plugin install` | `karpathy` |
-| Codex agents (16 `.toml` files) | `~/.codex/agents/` | (always, target codex) |
+| Codex agents (17 `.toml` files) | `~/.codex/agents/` | (always, target codex) |
 | `[agents.<name>]` blocks between `# agentkit:start` and `# agentkit:end` | `~/.codex/config.toml` | (always, target codex) |
 | Workflow block between `<!-- agentkit:start -->` and `<!-- agentkit:end -->` | `~/.codex/AGENTS.md` | `claude-md` |
 | Skills `agent-report`, `security-audit`, `write-swift` | `~/.codex/skills/` | `skills` |
@@ -342,7 +342,7 @@ With target codex, agentkit converts each `agents/<name>.md` to a Codex custom a
 
 Limits on Codex:
 
-- There is no SubagentStop hook on Codex, so nothing is logged automatically. The `supervisor` agent file still tells the supervisor to run `agentkit log add` for each FIX. Codex may or may not follow this. Rules such as `scope` or `git-write` are never checked on Codex.
+- There is no SubagentStop hook on Codex, so nothing is logged automatically. The `supervisor-review` agent file still tells the reviewer to run `agentkit log add` for each FIX. Codex may or may not follow this. Rules such as `scope` or `git-write` are never checked on Codex.
 - There is no auto-update hook.
 - Agent bodies describe capabilities using the host's native mechanisms. Claude frontmatter tool lists are unchanged. Matching runtime behavior across hosts has not been verified.
 - `doctor`, `update` and `uninstall` cover both targets.
@@ -368,11 +368,11 @@ The workflow block in CLAUDE.md or AGENTS.md tells the main session how to work 
 flowchart TD
     Task[Your task] --> Small{3 files or fewer, one area,<br/>no schema or auth change?}
     Small -->|Yes| Direct[Main session does the task directly]
-    Small -->|No| Plan[Supervisor: PLAN<br/>Split work into parts and waves]
+    Small -->|No| Plan[supervisor-plan<br/>Split work into parts and waves]
     Plan --> Approval[You review the plan,<br/>skill choices, and any package installs]
     Approval -->|Changes requested| Plan
     Approval -->|Approved| Workers[Workers run in parallel waves<br/>Each file has one owner]
-    Workers --> Review[Supervisor: REVIEW<br/>Check the task and worker reports]
+    Workers --> Review[supervisor-review<br/>Check the task and worker reports]
     Review --> Fix{Fixes needed?}
     Fix -->|No| Result[Main session reports the result,<br/>verdict, and open items]
     Fix -->|Yes| Limit{Two fix rounds<br/>already completed?}
@@ -382,14 +382,14 @@ flowchart TD
     Direct --> Result
 ```
 
-1. The supervisor agent runs in PLAN mode. It splits the task into parts and waves.
+1. The `supervisor-plan` agent runs. It splits the task into parts and waves.
 2. The main session shows you the plan: the number of agents, the waves, and the work of each agent. You approve it or change it. If a part needs an install, you approve the packages.
 3. Workers run. Parts in the same wave run in parallel. Two parts never edit the same file.
-4. The supervisor runs in REVIEW mode. It checks the worker reports against the task.
-5. Each fix goes back to the worker that owns the part. REVIEW runs again. The loop stops after 2 rounds.
+4. The `supervisor-review` agent runs. It checks the worker reports against the task.
+5. Each fix goes back to the worker that owns the part. `supervisor-review` runs again. The loop stops after 2 rounds.
 6. You get the result, the verdict, and anything that is still open.
 
-The supervisor is skipped for small tasks: 3 files or fewer, one area, no schema or auth change.
+`supervisor-plan` is skipped for small tasks: 3 files or fewer, one area, no schema or auth change.
 
 Example prompt:
 
@@ -397,7 +397,7 @@ Example prompt:
 Add a "last login" column to the users table and show it on the admin page.
 ```
 
-The supervisor can split this into a database part (migration), a backend part (API field), a frontend part (column) and a tester part. The plan shows you this split before any worker starts.
+`supervisor-plan` can split this into a database part (migration), a backend part (API field), a frontend part (column) and a tester part. The plan shows you this split before any worker starts.
 
 ### Agents
 
@@ -416,7 +416,8 @@ The supervisor can split this into a database part (migration), a backend part (
 | `researcher` | Read-only research in code and on the web | sonnet | browse |
 | `security` | Security review. Does not edit project files. | opus | karpathy-guidelines, cso, security-review, security-audit |
 | `seo` | Keywords, on-page and technical SEO, page speed | sonnet | karpathy-guidelines, browse, benchmark |
-| `supervisor` | PLAN mode and REVIEW mode for multi-step work | opus | asd-ste100 |
+| `supervisor-plan` | Splits multi-step work into parts and waves | opus | asd-ste100 |
+| `supervisor-review` | Reviews worker results against the task | opus | asd-ste100 |
 | `tester` | Writes and runs tests. Edits test files only. | sonnet | karpathy-guidelines |
 | `writing` | Posts and copy for Telegram, LinkedIn and other channels | opus | (none listed) |
 
@@ -526,7 +527,7 @@ Some rules share less than a command sample:
 - `tool-error` keeps only the count.
 - Other rules keep the scrubbed command text. It can still contain project names and short paths (a path with 2 parts or fewer is kept, for example `~/a/b`).
 
-The export never contains session ids, transcripts, paths to your session files, or your name. Task descriptions are dropped, but `review-fix` samples keep the supervisor's issue text, which can name the task.
+The export never contains session ids, transcripts, paths to your session files, or your name. Task descriptions are dropped, but `review-fix` samples keep the reviewer's issue text, which can name the task.
 
 Scrubbing is best effort. You see the export before it is sent. Read it first.
 

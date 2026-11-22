@@ -346,7 +346,7 @@ class TestPluginAndMasks(Base):
         r, iss = self.check("go", [], msg="done", atype="agentkit:backend", agent_id="c")
         self.assertEqual([i["rule"] for i in iss if i["agent_id"] == "c"], ["report-incomplete"])
         r, iss = self.check("go", [use("Agent", description="d", prompt="p", subagent_type="x")],
-                            atype="agentkit:supervisor", agent_id="d")
+                            atype="agentkit:supervisor-review", agent_id="d")
         self.assertEqual([i for i in iss if i["agent_id"] == "d"], [])
 
     def test_33_export_accepts_prefix(self):

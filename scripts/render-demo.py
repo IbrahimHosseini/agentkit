@@ -32,7 +32,7 @@ SCENES = [
         ('    --skip gstack --skip karpathy', TEXT),
         ('', TEXT),
         ('[1/3] Claude: agents and skills', CYAN),
-        ('  + 16 agents and 3 bundled skills', GREEN),
+        ('  + 17 agents and 3 bundled skills', GREEN),
         ('[2/3] Claude: CLAUDE.md', CYAN),
         ('  + CLAUDE.md: added block', GREEN),
         ('[3/3] Claude: SubagentStop hook', CYAN),

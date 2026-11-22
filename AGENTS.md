@@ -18,7 +18,7 @@ Shared agents and skills for Claude Code and Codex. A Python 3.9+ core runs the 
 - Native Windows skips gstack, the Karpathy plugin, Bash hooks, and auto-update.
 - Marker-managed blocks: `<!-- agentkit:start/end -->` (md), `# agentkit:start/end` (toml). Never edit outside the markers.
 - Tests must use a scratch `HOME`/`CODEX_HOME`. Do not touch the real `~/.codex` or `~/.claude` without asking.
-- Do not commit or push unless asked. Do not use `--force` on the real `~/.codex` without asking (it replaces the user's 16 existing agents).
+- Do not commit or push unless asked. Do not use `--force` on the real `~/.codex` without asking (it replaces the user's existing agents).
 
 ## Check before finishing
 ```bash
