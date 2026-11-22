@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The Codex model picker lists Claude models. A Codex agent set to one relays its task to `claude -p` with the chosen model and effort and runs with `danger-full-access`, because the default Codex sandbox blocks the network and `~/.claude`. Switching back to a Codex model restores the agent.
+
 ### Changed
 
 - The `supervisor` agent is split into `supervisor-plan` (PLAN mode) and `supervisor-review` (REVIEW mode), so each can use its own model and effort. Both default to opus/high. `agentkit update` removes the old `supervisor` file unless you edited it, and the workflow blocks point at the new agents. Select models with `agentkit models`.

@@ -24,6 +24,7 @@ The agents follow one workflow. `supervisor-plan` plans the work. You approve th
 - **macOS, Linux, and native Windows support** through a shared Python lifecycle engine. Optional POSIX integrations are listed below.
 - **Per-agent model and effort selection** during interactive installation or later with `agentkit models`. Choices survive updates.
 - **OpenAI models inside Claude Code:** the Claude model picker lists OpenAI models. An agent set to one relays its task to `codex exec` with the chosen model and effort, so you can use Codex models from Claude. See [OpenAI models for Claude agents](#openai-models-for-claude-agents).
+- **Claude models inside Codex:** the Codex model picker lists Claude models. A Codex agent set to one relays its task to `claude -p`. See [Claude models for Codex agents](#claude-models-for-codex-agents).
 - **Managed installation and updates** with backups, dry runs, and preservation of user edits. Upstream changes to edited files are saved as `.agentkit-new` for review.
 - **Installation health checks** with `agentkit doctor`, plus an uninstall command that keeps edited files.
 - **Claude Code hooks on macOS and Linux:** the default user installation includes agent issue logging and auto-update. Install asks before adding hooks.
@@ -256,6 +257,14 @@ Enter or `n` keeps the displayed settings. With `y`, select a numbered model for
 The Claude picker also lists OpenAI models (from Codex when installed, otherwise the bundled mapping). Claude Code cannot run an OpenAI model itself, so a Claude agent set to one stays a Claude agent (`model: sonnet`) and becomes a relay: agentkit adds a marker-managed block at the top of the installed agent that tells it to pass the task and its worker instructions to `codex exec -m <model> -c model_reasoning_effort=<effort>` and return the result unchanged. The sandbox is `workspace-write` for agents with `Edit` or `Write`, otherwise `read-only` (`security` is always read-only). `Bash` is added to the agent's tools when missing and removed again when you switch back to a Claude model.
 
 Requirements: the Codex CLI on `PATH` and `codex login`. If Codex is missing or fails, the relay reports the error and does no work. The Codex run is a separate process, so the OpenAI model does not see Claude Code's own skills or MCP tools, and its usage counts against your Codex or OpenAI limits. Choose `r` to restore the agentkit default.
+
+#### Claude models for Codex agents
+
+The Codex picker also lists Claude models (`opus`, `sonnet`, `haiku` from the bundled list, unverified; use `m` for another ID). A Codex agent set to one keeps its own Codex model as the host and becomes a relay: agentkit adds a marker-managed block at the start of its `developer_instructions` that tells it to pass the task and its worker instructions to `claude -p --model <model> [--effort <effort>]` and return the result unchanged. Agents with `Edit` or `Write` run Claude with `--permission-mode acceptEdits --allowedTools Bash`; the others (and `security`) run with `--permission-mode plan`.
+
+The default Codex sandbox blocks the network and writes to `~/.claude`, which `claude` needs. A relay agent therefore gets `sandbox_mode = "danger-full-access"`. Its limits come from Claude's permission mode, not from the operating system. Other agents keep their sandbox. Switching back to a Codex model restores the host model, effort and sandbox.
+
+Requirements: the Claude Code CLI on `PATH` and a logged-in session. If it is missing or fails, the relay reports the error and does no work. The Claude run is a separate process, so it does not see Codex skills or MCP tools, and its usage counts against your Claude limits. Start a new Codex session after changing agent files.
 
 Change choices later, without reinstalling skills, hooks or workflow instructions:
 
