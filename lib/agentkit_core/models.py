@@ -25,6 +25,40 @@ PREFERENCES = 'agentkit/model-overrides.json'
 # Live catalogs may advertise levels beyond the bundled source-file schema.
 EFFORT = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
 MODEL_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/@+()\[\]-]{0,255}$')
+# OpenAI models cannot run as a Claude Code subagent model. For the Claude target
+# the agent stays a Claude agent (the host) and relays its work to `codex exec`.
+OPENAI_MODEL = re.compile(r'^(gpt-|chatgpt-|codex-|o[0-9])', re.I)
+HOST_MODEL = 'sonnet'
+RELAY_START = '<!-- agentkit:codex:start model={model} effort={effort} sandbox={sandbox} tools={tools} -->'
+RELAY_RE = re.compile(r'<!-- agentkit:codex:start model=(\S+) effort=(\S+) sandbox=(\S+) tools=(\S*) -->\n.*?<!-- agentkit:codex:end -->\n*', re.S)
+
+
+def is_openai(model):
+    return bool(OPENAI_MODEL.match(model or ''))
+
+
+def relay_block(model, effort, sandbox, tools):
+    command = 'codex exec --skip-git-repo-check -m ' + model + ' -s ' + sandbox
+    if effort:
+        command += ' -c model_reasoning_effort=\\"' + effort + '\\"'
+    command += ' -'
+    return '\n'.join([
+        RELAY_START.format(model=model, effort=effort or 'inherit', sandbox=sandbox, tools=tools),
+        'You are a relay. This agent runs on the OpenAI model ' + model
+        + (' with effort ' + effort if effort else '') + ' through the Codex CLI.',
+        'Do not do the work yourself. Do this instead:',
+        '1. Write a prompt file in your scratchpad. It holds the worker instructions (everything after the end marker of this block) and then the assignment you received.',
+        '2. Run: `' + command + ' < prompt-file`',
+        '3. Return the final message of that run and the real output of its checks. Add nothing of your own.',
+        'If `codex` is missing, not logged in, or exits with an error, stop. Report the exact error and that no work was done.',
+        '<!-- agentkit:codex:end -->', ''])
+
+
+def sandbox_for(fm):
+    tools = [t.strip() for t in str(fm.get('tools', '')).split(',')]
+    if fm.get('name') == 'security':
+        return 'read-only'
+    return 'workspace-write' if ('Edit' in tools or 'Write' in tools) else 'read-only'
 
 
 def validate_choice(value):
@@ -62,7 +96,11 @@ def default_choice(root, source, target):
 def read_choice(data, target):
     text = data.decode('utf-8')
     if target == 'claude':
-        fm, _ = codex.parse_md(text, 'installed agent')
+        fm, body = codex.parse_md(text, 'installed agent')
+        relay = RELAY_RE.search(body)
+        if relay:
+            effort = relay.group(2)
+            return validate_choice({'model': relay.group(1), 'effort': None if effort == 'inherit' else effort})
         return validate_choice({'model': fm.get('model'), 'effort': fm.get('effort') or None})
     values = {}
     # Generated agents use one JSON-compatible TOML string per field.
@@ -84,11 +122,32 @@ def patch_agent(data, target, choice):
         end = next((i for i in range(1, len(lines)) if lines[i].strip() == '---'), None)
         if end is None:
             raise ValueError('unterminated agent frontmatter')
-        fields = ['model: ' + choice['model'] + newline]
-        if choice['effort'] is not None:
+        fm, _ = codex.parse_md(text, 'agent')
+        relay = is_openai(choice['model'])
+        fields = ['model: ' + (HOST_MODEL if relay else choice['model']) + newline]
+        if choice['effort'] is not None and not relay:
             fields.append('effort: ' + choice['effort'] + newline)
         middle = [line for line in lines[1:end] if not re.match(r'^(model|effort):', line)]
-        text = ''.join(lines[:1] + middle + fields + lines[end:])
+        rest = ''.join(lines[end + 1:]).replace('\r\n', '\n')
+        previous = RELAY_RE.search(rest)
+        tools = [t.strip() for t in str(fm.get('tools', '')).split(',') if t.strip()]
+        original = previous.group(4) if previous else ','.join(tools)
+        if previous and not relay:
+            # Leaving the relay: put back the tools the agent had before it.
+            middle = [('tools: ' + original.replace(',', ', ') + newline) if line.startswith('tools:') and original else line
+                      for line in middle]
+        elif relay and tools and 'Bash' not in tools:
+            # The relay needs a shell to call Codex.
+            middle = [line.rstrip('\r\n') + ', Bash' + newline if line.startswith('tools:') else line for line in middle]
+        if relay or previous:
+            # Only touch the body when a relay block is added or removed.
+            body = RELAY_RE.sub('', rest)
+            if relay:
+                body = relay_block(choice['model'], choice['effort'], sandbox_for(fm), original) + body
+            rest = body.replace('\n', newline) if newline == '\r\n' else body
+        else:
+            rest = ''.join(lines[end + 1:])
+        text = ''.join(lines[:1] + middle + fields + [lines[end]]) + rest
         codex.parse_md(text, 'rendered agent')
     else:
         fields = ['model = ' + codex.q(choice['model']) + newline]
@@ -352,17 +411,29 @@ def claude_catalog(root, home, timeout=10):
     return entries
 
 
+def openai_entries(root, say):
+    """OpenAI models a Claude agent can use by relaying to Codex. Never fails the picker."""
+    try:
+        found = [dict(item, source='Codex CLI (relay)') for item in codex_catalog() if is_openai(item['model'])]
+        if found:
+            return found
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    say('OpenAI models for Claude agents come from the local mapping (unverified). Install Codex and run codex login.')
+    return [dict(item, source='local fallback (relay)') for item in fallback_catalog(root, 'codex')]
+
+
 def catalog(root, target, say, home=None, include_hidden=False):
     try:
         result = codex_catalog(include_hidden=include_hidden) if target == 'codex' else claude_catalog(root, home)
         say('Models reported by ' + target + ' (access is not guaranteed).')
-        return result
+        return result + openai_entries(root, say) if target == 'claude' else result
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # SDK stderr/provider output is deliberately never printed.
         reason = str(exc) if isinstance(exc, ValueError) else 'helper could not start; check installed CLI and runtime'
         say('Live model discovery unavailable: ' + reason + '.')
     say('Local fallback: known models; access unverified. Check CLI login, version and account availability.')
-    return fallback_catalog(root, target)
+    return fallback_catalog(root, target) + (openai_entries(root, say) if target == 'claude' else [])
 
 
 def describe(choice):
@@ -585,7 +656,11 @@ def configure(lifecycle, installing=False, read=None):
             show_all = (lambda: catalog(lifecycle.root, target, say, home=lifecycle.homes[target], include_hidden=True)) if target == 'codex' else None
             value = choose(row['current'], row['default'], catalogs[target], say, read, show_all, terminal=terminal)
             # An unchanged choice must not accidentally pin a source default.
-            if value != row['current'] or (value is None and row['name'] in states[target]['agents']):
+            # An OpenAI model saved by an older agentkit has no relay block, so Claude Code
+            # would load it as a Claude model ID and fail. Saving the same choice repairs it.
+            broken = (target == 'claude' and row['before'] is not None and value is not None
+                      and is_openai(value['model']) and b'agentkit:codex:start' not in row['before'])
+            if value != row['current'] or broken or (value is None and row['name'] in states[target]['agents']):
                 choices[(target, row['name'])] = value
         if not choices:
             say('No model changes selected.')

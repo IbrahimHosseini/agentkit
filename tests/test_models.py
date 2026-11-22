@@ -555,8 +555,59 @@ for line in sys.stdin:
             self.assertIn('access unverified', '\n'.join(output))
 
     def test_claude_catalog_without_runtime_home_falls_back(self):
-        with mock.patch.object(models.subprocess, 'Popen', side_effect=AssertionError('unexpected process')):
+        with mock.patch.object(models.subprocess, 'Popen', side_effect=AssertionError('unexpected process')), \
+             mock.patch.object(models, 'openai_entries', return_value=[]):
             self.assertEqual(len(models.catalog(ROOT, 'claude', lambda _: None)), 3)
+
+    def test_claude_catalog_adds_openai_relay_models(self):
+        relay = [{'model': 'gpt-x', 'name': 'gpt-x', 'efforts': ['high'], 'default': 'high', 'hidden': False,
+                  'source': 'Codex CLI (relay)', 'status': 'reported'}]
+        with mock.patch.object(models, 'codex_catalog', return_value=relay + [dict(relay[0], model='other-model')]):
+            found = models.openai_entries(ROOT, lambda _: None)
+        self.assertEqual([item['model'] for item in found], ['gpt-x'])
+        with mock.patch.object(models, 'codex_catalog', side_effect=ValueError('no codex')):
+            output = []
+            found = models.openai_entries(ROOT, output.append)
+        self.assertTrue(found and all(models.is_openai(item['model']) for item in found))
+        self.assertIn('unverified', ' '.join(output))
+
+    def test_openai_model_relays_through_codex_and_restores(self):
+        for path in sorted((ROOT / 'agents').glob('*.md')):
+            original = path.read_bytes()
+            base = models.patch_agent(original, 'claude', {'model': 'sonnet', 'effort': None})
+            relay = models.patch_agent(base, 'claude', {'model': 'gpt-6.1-sol', 'effort': 'high'})
+            text = relay.decode('utf-8')
+            fm, body = codex.parse_md(text, 'x')
+            self.assertEqual(fm['model'], 'sonnet')
+            self.assertNotIn('effort', fm)
+            self.assertIn('Bash', fm['tools'])
+            self.assertIn('codex exec', body)
+            self.assertIn('-m gpt-6.1-sol', body)
+            self.assertEqual(models.read_choice(relay, 'claude'), {'model': 'gpt-6.1-sol', 'effort': 'high'})
+            # Switching model never stacks a second block.
+            again = models.patch_agent(relay, 'claude', {'model': 'gpt-6-luna', 'effort': None})
+            self.assertEqual(again.count(b'agentkit:codex:start'), 1)
+            self.assertEqual(models.read_choice(again, 'claude'), {'model': 'gpt-6-luna', 'effort': None})
+            self.assertNotIn(b'model_reasoning_effort', again)
+            # Back to a Claude model restores the original tools and body.
+            self.assertEqual(models.patch_agent(again, 'claude', {'model': 'sonnet', 'effort': None}), base)
+
+    def test_legacy_openai_model_without_relay_is_repaired(self):
+        legacy = (ROOT / 'agents/backend.md').read_text(encoding='utf-8').replace('model: sonnet', 'model: gpt-6.2-sol').encode()
+        choice = models.read_choice(legacy, 'claude')
+        self.assertEqual(choice, {'model': 'gpt-6.2-sol', 'effort': None})
+        fixed = models.patch_agent(legacy, 'claude', choice)
+        fm, body = codex.parse_md(fixed.decode(), 'x')
+        self.assertEqual(fm['model'], 'sonnet')
+        self.assertIn('-m gpt-6.2-sol', body)
+        self.assertNotIn('model_reasoning_effort', body)
+
+    def test_relay_sandbox_follows_agent_tools(self):
+        reader = (ROOT / 'agents/security.md').read_bytes()
+        writer = (ROOT / 'agents/backend.md').read_bytes()
+        choice = {'model': 'gpt-6.1-sol', 'effort': 'high'}
+        self.assertIn(b'-s read-only', models.patch_agent(reader, 'claude', choice))
+        self.assertIn(b'-s workspace-write', models.patch_agent(writer, 'claude', choice))
 
 
     def test_codex_hidden_new_effort_and_missing_capabilities(self):
@@ -585,7 +636,8 @@ for line in sys.stdin:
         for available, expected in [({}, 'Node.js is missing'),
                                     ({'node': '/node'}, 'CLI is missing'),
                                     ({'node': '/node', 'claude': '/claude'}, 'npm is missing')]:
-            with mock.patch.object(models.platforms, 'find_command', side_effect=lambda name: available.get(name)):
+            with mock.patch.object(models.platforms, 'find_command', side_effect=lambda name: available.get(name)), \
+                 mock.patch.object(models, 'openai_entries', return_value=[]):
                 output = []
                 rows = models.catalog(ROOT, 'claude', output.append, home=home)
                 self.assertEqual(rows, models.fallback_catalog(ROOT, 'claude'))
@@ -643,6 +695,7 @@ for line in sys.stdin:
                     [{'value': 'x', 'supportedEffortLevels': False}],
                     [{'value': 'x', 'supportedEffortLevels': {}}], [{'value': 'bad id'}]]:
             with mock.patch.object(models, 'bounded_run', side_effect=[b'', json.dumps(raw).encode()]), \
+                 mock.patch.object(models, 'openai_entries', return_value=[]), \
                  mock.patch.object(models.platforms, 'find_command', side_effect=lambda name: '/' + name):
                 output = []
                 self.assertEqual(models.catalog(ROOT, 'claude', output.append, home=self.home / '.claude'),
