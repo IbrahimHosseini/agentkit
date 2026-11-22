@@ -1,3 +1,9 @@
+# Current work: prepare agentkit 0.7.0
+
+Work date: 2026-11-22. Release branch `codex/release-0.7.0` starts from `origin/main` (`a39693d`, PR #12 merged). Version, plugin metadata and changelog are `0.7.0`. The release adds OpenAI models in the Claude picker: a Claude agent set to one stays on a Claude host model and relays its task to `codex exec`; switching back restores the agent. It also includes the Codex role file fix (`name` and `description` first) and the quiet-update notification fix. The README Features list and the OpenAI section describe the relay. Publication is pending: open the version PR, wait for the user to merge it, then tag the merged main commit `v0.7.0` and publish the GitHub release. No tag exists yet.
+
+---
+
 # Current work: prepare agentkit 0.5.0
 
 The user authorized committing, pushing, opening a PR, and publishing a tagged release on 2026-11-18. Release branch `codex/release-0.5.0` starts from `origin/main` at `dc29d80`; implementation commit `4d4cbb1` carries only this task's reviewed changes. The unrelated open PR #9 stays on its original branch. Version and plugin metadata are `0.5.0`, with dated changelog notes and SDK attribution. Follow CONTRIBUTING.md: wait for the user to merge the release PR, verify the merged main commit and CI, then tag and publish. No release tag has been created yet.

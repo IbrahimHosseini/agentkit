@@ -23,6 +23,7 @@ The agents follow one workflow. A supervisor plans the work. You approve the pla
 - **Three bundled skills:** `agent-report`, `security-audit`, and `write-swift`.
 - **macOS, Linux, and native Windows support** through a shared Python lifecycle engine. Optional POSIX integrations are listed below.
 - **Per-agent model and effort selection** during interactive installation or later with `agentkit models`. Choices survive updates.
+- **OpenAI models inside Claude Code:** the Claude model picker lists OpenAI models. An agent set to one relays its task to `codex exec` with the chosen model and effort, so you can use Codex models from Claude. See [OpenAI models for Claude agents](#openai-models-for-claude-agents).
 - **Managed installation and updates** with backups, dry runs, and preservation of user edits. Upstream changes to edited files are saved as `.agentkit-new` for review.
 - **Installation health checks** with `agentkit doctor`, plus an uninstall command that keeps edited files.
 - **Claude Code hooks on macOS and Linux:** the default user installation includes agent issue logging and auto-update. Install asks before adding hooks.
