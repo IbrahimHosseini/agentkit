@@ -250,6 +250,12 @@ Do you want to change these models or effort levels? [y/N]
 
 Enter or `n` keeps the displayed settings. With `y`, select a numbered model for each agent, then a supported effort level. Enter keeps the current value when it is compatible; a different model may require a new default effort. `m` accepts a model ID manually, and `r` restores the agentkit default. Unknown manual models inherit effort from the target CLI. Review the final table and confirm before any model choices are saved. Declining or ending input discards the selections; Ctrl-C stops the command. Prerequisites already installed remain installed.
 
+#### OpenAI models for Claude agents
+
+The Claude picker also lists OpenAI models (from Codex when installed, otherwise the bundled mapping). Claude Code cannot run an OpenAI model itself, so a Claude agent set to one stays a Claude agent (`model: sonnet`) and becomes a relay: agentkit adds a marker-managed block at the top of the installed agent that tells it to pass the task and its worker instructions to `codex exec -m <model> -c model_reasoning_effort=<effort>` and return the result unchanged. The sandbox is `workspace-write` for agents with `Edit` or `Write`, otherwise `read-only` (`security` is always read-only). `Bash` is added to the agent's tools when missing and removed again when you switch back to a Claude model.
+
+Requirements: the Codex CLI on `PATH` and `codex login`. If Codex is missing or fails, the relay reports the error and does no work. The Codex run is a separate process, so the OpenAI model does not see Claude Code's own skills or MCP tools, and its usage counts against your Codex or OpenAI limits. Choose `r` to restore the agentkit default.
+
 Change choices later, without reinstalling skills, hooks or workflow instructions:
 
 ```bash
