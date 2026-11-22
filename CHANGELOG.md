@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Generated Codex agent files now start with `name` and `description`. Current Codex versions ignore a standalone role file without them. Reinstall or update to regenerate the files.
+
 ## [0.6.0] - 2026-11-19
 
 ### Changed

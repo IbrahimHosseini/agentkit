@@ -138,8 +138,12 @@ def render_agent(src, models, kmd, out):
     skills = fm.get('skills') or []
     if any(s in KARPATHY for s in skills):
         body += '\n\n' + need(kmd).strip('\n')
-    t = 'developer_instructions = %s\nmodel = %s\nmodel_reasoning_effort = %s\nsandbox_mode = %s\n' % (
-        q(body + '\n'), q(model), q(effort), q(sandbox))
+    desc = fm.get('description')
+    if not desc or not isinstance(desc, str):
+        raise Fail(src + ': missing description')
+    # Codex ignores a standalone role file unless it defines name, description and developer_instructions.
+    t = 'name = %s\ndescription = %s\ndeveloper_instructions = %s\nmodel = %s\nmodel_reasoning_effort = %s\nsandbox_mode = %s\n' % (
+        q(name), q(desc), q(body + '\n'), q(model), q(effort), q(sandbox))
     validate_toml(t, src)
     wr(out, t)
 
