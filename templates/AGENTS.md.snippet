@@ -1,5 +1,11 @@
 # Multi-agent workflow (agentkit)
 This section and "Agent management" apply to the main session only. If you are a subagent, skip them.
+
+Before launching any agent, including the supervisor, read its installed role from `${CODEX_HOME:-$HOME/.codex}/agents/<role>.toml`. Use its `developer_instructions`, `model`, `model_reasoning_effort` when present, and sandbox settings. Do not use the repository's Claude agent source or the parent model in place of the installed Codex settings.
+- If the spawn tool supports registered roles, select the role explicitly. A task name or a prompt saying "use the supervisor role" does not select its configuration.
+- If the tool only accepts a prompt and model options, pass the installed instructions and explicit model and effort options. For `collaboration.spawn_agent`, use `fork_turns="none"` when passing model or reasoning overrides; a full-history fork inherits the parent model. Include the task context in the message. An omitted role effort inherits the current CLI effort.
+- If the host cannot apply the role's model or sandbox settings, report that limitation before launching. Never silently substitute the parent model. Reuse an existing agent only if it was launched with the required settings; model changes require a new agent.
+
 For any task that changes code or has several steps (not quick questions or one-line edits), I authorize subagents, with this process:
 1. Run the supervisor agent in PLAN mode. It splits the task into parts and parallel waves. Skip the supervisor and do the task directly if it touches 3 files or fewer, in one area, with no schema or auth change. Say so in one line.
 2. Show me the plan: number of agents, waves, and what each agent does. Ask me the option for each part marked NEEDS_SKILL_CHOICE. If I pick shadcn, name package.json and the config files in the assignment. If a part needs an install, ask me to approve the packages, and write `Install approved: <packages>` in the assignment. Wait for my approval before you start any worker. I can change the plan.

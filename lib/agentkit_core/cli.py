@@ -75,6 +75,12 @@ class Lifecycle:
         if self.args.command != 'update' or self.args.dry_run:
             self.say(text)
 
+    def notify_update_failure(self) -> None:
+        if self.args.quiet and not self.args.dry_run:
+            for home in self.homes.values():
+                if (home / 'agentkit').is_dir():
+                    atomic_write(home / 'agentkit/update-status', b'agentkit: auto-update failed, see update.log\n')
+
     def warn(self, text: str) -> None:
         print('warning: ' + text, file=sys.stderr)
 
@@ -754,6 +760,7 @@ class Lifecycle:
                 branch = platforms.run(['git', '-C', str(self.root), 'symbolic-ref', '--quiet', '--short', 'HEAD'],
                                        capture_output=True, text=True)
                 if branch.returncode or branch.stdout.strip() != 'main':
+                    self.notify_update_failure()
                     raise ValueError('update requires the main branch; switch this checkout to main, then retry')
                 self.say('[1/2] Downloading updates from origin/main ...')
                 try:
@@ -765,10 +772,7 @@ class Lifecycle:
                     platforms.run(['git', '-C', str(self.root), 'merge', '--ff-only', '--no-stat',
                                    'refs/remotes/origin/main'], capture_output=True, text=True, check=True)
                 except subprocess.CalledProcessError as error:
-                    if self.args.quiet:
-                        for home in self.homes.values():
-                            if (home / 'agentkit').is_dir():
-                                atomic_write(home / 'agentkit/update-status', b'agentkit: auto-update failed, see update.log\n')
+                    self.notify_update_failure()
                     raise ValueError('origin/main update failed: ' +
                                      (error.stderr or error.stdout or 'Git failed').strip() +
                                      '. Fix it by hand: cd ' + str(self.root) + ' && git status')

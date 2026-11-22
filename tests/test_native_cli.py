@@ -131,6 +131,26 @@ class NativeLifecycleTests(unittest.TestCase):
         self.assertEqual(tree_bytes(self.codex), before)
         self.assertEqual(self.git_run('branch', '--show-current', cwd=self.repo).stdout.strip(), 'development')
 
+    def test_quiet_update_branch_refusal_notifies_without_changing_installation(self):
+        self.install('claude')
+        self.git_run('checkout', '-qb', 'development', cwd=self.repo)
+        self.publish_agent_change()
+        before = tree_bytes(self.claude)
+        before_refs = self.git_run('show-ref', cwd=self.repo).stdout
+        status = self.claude / 'agentkit/update-status'
+        self.cli('update', '--quiet', '--dry-run')
+        self.assertFalse(status.exists())
+        self.assertEqual(tree_bytes(self.claude), before)
+        result = self.cli('update', '--quiet', expected=1)
+        self.assertIn('requires the main branch', result.stdout)
+        self.assertTrue(status.is_file(), 'quiet update refusal must notify the next session')
+        self.assertEqual(status.read_text(), 'agentkit: auto-update failed, see update.log\n')
+        after = tree_bytes(self.claude)
+        after.pop(str(Path('agentkit') / 'update-status'))
+        self.assertEqual(after, before)
+        self.assertEqual(self.git_run('show-ref', cwd=self.repo).stdout, before_refs)
+        self.assertEqual(self.git_run('branch', '--show-current', cwd=self.repo).stdout.strip(), 'development')
+
     def test_help_and_version(self):
         self.assertIn('install', self.cli('help').stdout)
         self.assertIn((self.repo / 'VERSION').read_text().strip(), self.cli('version').stdout)
