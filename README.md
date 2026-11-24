@@ -11,13 +11,13 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platforms">
 </p>
 
-agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 17 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes on POSIX systems. One command installs it. One command updates it.
+agentkit is a shared pack of agents for a team. It works with Claude Code and with Codex. It has 50 agents, three skills, a workflow block for CLAUDE.md or AGENTS.md and (for Claude Code) a hook that logs agent mistakes on POSIX systems. One command installs it. One command updates it.
 
 The agents follow one workflow. `supervisor-plan` plans the work. You approve the plan. Workers do the parts. `supervisor-review` reviews the result. The hook records when an agent breaks a rule, so the team can improve the agent files.
 
 ## Features
 
-- **17 specialized agents** for planning, development, design, testing, security, documentation, and content.
+- **50 named roles** for planning, development, design, product, testing, security, documentation, and content. Six roles can route approved work to optional specialists.
 - **Claude Code and Codex support** from the same agent sources, with Codex model and sandbox settings generated during install.
 - **A shared workflow** with a planning agent, your approval, parallel workers, and review with up to two fix rounds.
 - **Three bundled skills:** `agent-report`, `security-audit`, and `write-swift`.
@@ -42,6 +42,7 @@ The agents follow one workflow. `supervisor-plan` plans the work. You approve th
   - [Targets](#targets)
   - [Codex](#codex)
 - [Usage and workflow](#usage)
+  - [Specialist families](#specialist-families)
   - [Agents](#agents)
 - [Updating](#updating)
 - [Agent log](#agent-log)
@@ -221,10 +222,11 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 | Flag | Effect |
 |---|---|
 | `--dry-run` | Show what would change. Write nothing. |
-| `--yes`, `-y` | Accept ordinary install prompts and keep existing/default model settings. Remote scripts and desktop installation still need separate interactive confirmation. |
+| `--yes`, `-y` | Accept ordinary install prompts and use saved or default agent and model selections. `--skip-agent` overrides the saved agent exclusions. Remote scripts and desktop installation still need separate interactive confirmation. |
 | `--target claude\|codex\|both` | Choose the CLI to install for. See below. |
 | `--project DIR` | Install into `DIR/.claude` and `DIR/CLAUDE.md`, not into `~/.claude`. Claude only. |
 | `--skip STEP` | Skip a step. STEP is `gstack`, `karpathy`, `claude-md`, `hooks` or `skills`. Repeat the flag to skip more. |
+| `--skip-agent NAME` | Exclude an agent during `install`. Repeat the flag to provide the full list of exclusions for the selected targets. Required agents and dependencies of selected agents cannot be excluded. |
 | `--force` | Replace files that already exist and that agentkit did not install. A backup is made first. |
 | `--quiet` | Print only errors. Questions still show. |
 
@@ -240,9 +242,30 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 - `--project` works only for Claude. `--project` with `--target codex` or `both` is an error.
 - `auto-update` is for Claude on POSIX only.
 
+### Choose which agents to install
+
+In an interactive `agentkit install`, review the numbered agent list before choosing models. A fresh install starts with every agent selected. Toggle the roles you want to change and review the summary before applying your selection. The installer shows why an agent is locked.
+
+`supervisor-plan` and `supervisor-review` are required for every installation. Selecting any role in the following table also selects and locks its dependencies.
+
+| Selected agent | Required agents |
+|---|---|
+| `frontend` | `design`, `tester` |
+| `backend` | `database`, `security`, `tester` |
+| `mobile` | `design`, `tester` |
+| `devops` | `security` |
+
+For example, to omit `frontend`, `mobile`, and their shared `design` dependency in a scripted Codex install, use:
+
+```bash
+agentkit install --target codex --yes --skip-agent frontend --skip-agent mobile --skip-agent design
+```
+
+Install saves exclusions separately for each target and for each Claude project install. Without `--skip-agent`, unattended runs use the saved exclusions, or select all agents on a fresh install. `agentkit install --dry-run` previews the selection without saving it. To change the selection or bring a skipped role back, rerun `agentkit install` interactively. When you exclude a previously installed role, agentkit backs up and removes its unmodified managed file after confirmation. In an unattended reinstall that removes files, pass `--yes` to confirm. Edited and user-owned files are kept.
+
 ### Models and effort
 
-Interactive `agentkit models` first offers Claude, Codex, both, or cancel when both targets are installed. A single installed target is selected automatically; `--target` selects it explicitly. Selection happens before reading target preferences or fetching catalogs. During installation, the model picker offers only the installation targets already selected; choosing a model target does not change what gets installed.
+Interactive `agentkit models` first offers Claude, Codex, both, or cancel when both targets are installed. A single installed target is selected automatically. `--target` selects it explicitly. Selection happens before reading target preferences or fetching catalogs. During installation, the model picker offers the agents selected for each target. Choosing a model target leaves the installation selection in effect.
 
 After target selection, the picker displays each agent's model and effort and asks:
 
@@ -297,14 +320,14 @@ The hooks, gstack, and Karpathy plugin rows below apply to POSIX systems only. N
 
 | Item | Where | Step name |
 |---|---|---|
-| 17 agent files | `~/.claude/agents/` | (always) |
+| Selected agent files (up to 50) | `~/.claude/agents/` | Claude target |
 | Skills `agent-report`, `security-audit`, `write-swift` | `~/.claude/skills/` | `skills` |
 | Workflow block between `<!-- agentkit:start -->` and `<!-- agentkit:end -->` | `~/.claude/CLAUDE.md` | `claude-md` |
 | SubagentStop hook (agent log) | `~/.claude/settings.json` | `hooks` |
 | SessionStart hook (auto-update, enabled by default for user installations) | `~/.claude/settings.json` | `hooks` |
 | gstack (git clone, then its `./setup --host claude`) | `~/.claude/skills/gstack` | `gstack` |
 | karpathy-guidelines plugin | through `claude plugin install` | `karpathy` |
-| Codex agents (17 `.toml` files) | `~/.codex/agents/` | (always, target codex) |
+| Selected Codex agents (up to 50 `.toml` files) | `~/.codex/agents/` | Codex target |
 | `[agents.<name>]` blocks between `# agentkit:start` and `# agentkit:end` | `~/.codex/config.toml` | (always, target codex) |
 | Workflow block between `<!-- agentkit:start -->` and `<!-- agentkit:end -->` | `~/.codex/AGENTS.md` | `claude-md` |
 | Skills `agent-report`, `security-audit`, `write-swift` | `~/.codex/skills/` | `skills` |
@@ -337,7 +360,7 @@ With target codex, agentkit converts each `agents/<name>.md` to a Codex custom a
 | `sonnet` | `gpt-6-luna` | `medium` |
 
 - An `effort:` line in the agent file overrides the effort. To change a model, edit `codex/models.map`.
-- Sandbox rule: if `tools` has `Edit` or `Write`, the sandbox is `workspace-write`. If not, it is `read-only`. The `security` agent is always `read-only`.
+- The converter gives roles with `Edit` or `Write` a `workspace-write` sandbox and other roles a `read-only` sandbox. The security family always uses `read-only`.
 - Agents that list `karpathy-guidelines` get the text of `codex/karpathy-guidelines.md` at the end of their instructions. It is the Codex equivalent of the plugin.
 - The workflow block goes to `~/.codex/AGENTS.md`. It tells the main session to start workers as Codex subagents.
 - The three skills are copied to `~/.codex/skills`.
@@ -353,7 +376,7 @@ Limits on Codex:
 
 - There is no SubagentStop hook on Codex, so nothing is logged automatically. The `supervisor-review` agent file still tells the reviewer to run `agentkit log add` for each FIX. Codex may or may not follow this. Rules such as `scope` or `git-write` are never checked on Codex.
 - There is no auto-update hook.
-- Agent bodies describe capabilities using the host's native mechanisms. Claude frontmatter tool lists are unchanged. Matching runtime behavior across hosts has not been verified.
+- Agent bodies describe capabilities using the host's native mechanisms. Claude frontmatter lists the tools for each role. Scoped delegation also requires the host to enforce the role's tool and file limits.
 - `doctor`, `update` and `uninstall` cover both targets.
 
 ### Alternative: plugin install
@@ -365,7 +388,7 @@ Inside Claude Code:
 /plugin install agentkit@agentkit
 ```
 
-Plugin mode adds the agents, the skills and the agent-log hook. It does not add the CLAUDE.md workflow block. It does not add the `agentkit` CLI. Plugin agent names may get the prefix `agentkit:`. The agent log handles this.
+Plugin mode adds the full set of agents, the skills and the agent-log hook. Agent selection is available through `agentkit install`. Plugin agent names may get the prefix `agentkit:`. The agent log handles this. The workflow block and `agentkit` CLI are available through the standalone installer.
 
 Do not use both modes at once. You would get two copies of the hook.
 
@@ -395,7 +418,7 @@ flowchart TD
 2. The main session shows you the plan: the number of agents, the waves, and the work of each agent. You approve it or change it. If a part needs an install, you approve the packages.
 3. Workers run. Parts in the same wave run in parallel. Two parts never edit the same file.
 4. The `supervisor-review` agent runs. It checks the worker reports against the task.
-5. Each fix goes back to the worker that owns the part. `supervisor-review` runs again. The loop stops after 2 rounds.
+5. Each fix goes back to the worker that owns the part. A specialist's fix goes through its original parent to the same child role. `supervisor-review` runs again. The loop stops after 2 rounds.
 6. You get the result, the verdict, and anything that is still open.
 
 `supervisor-plan` is skipped for small tasks: 3 files or fewer, one area, no schema or auth change.
@@ -408,26 +431,51 @@ Add a "last login" column to the users table and show it on the admin page.
 
 `supervisor-plan` can split this into a database part (migration), a backend part (API field), a frontend part (column) and a tester part. The plan shows you this split before any worker starts.
 
+### Specialist families
+
+After the main session approves a parent's assignment, the parent can handle the work itself or choose eligible specialists from the active target's roster supplied by the main session or installed workflow. Only the six parents below can delegate, and each can delegate only to its own children. [Family catalog](agents/routing.json).
+
+| Parent | Optional specialists |
+|---|---|
+| `design` | `design-ux-research`, `design-ux-architecture` |
+| `seo` | `seo-aeo-foundations`, `seo-agentic-search`, `seo-ai-citations` |
+| `marketing` | `marketing-aso`, `marketing-dev-community`, `marketing-email`, `marketing-instagram`, `marketing-linkedin`, `marketing-publishing`, `marketing-reddit`, `marketing-tiktok`, `marketing-x-engagement`, `marketing-x-research` |
+| `product` | `product-trends`, `product-behavior`, `product-experiments` |
+| `security` | `security-ai-code`, `security-architecture`, `security-compliance`, `security-appsec`, `security-credentials`, `security-threat-intel`, `security-detection` |
+| `tester` | `test-accessibility`, `test-api`, `test-performance`, `test-e2e` |
+
+In the interactive installer, explicitly enabling a parent initially enables its listed specialists. You can then deselect specialists individually. When another role brings in the parent as a dependency, specialist choices stay as selected. The required roles and automatic install dependencies are listed in [selection.json](agents/selection.json).
+
+A child assignment names both roles, the objective, permitted files and tools, inherited permissions, and acceptance checks. Each permission must be allowed by the parent assignment and the child role. A parent or specialist can also take a self-contained direct assignment with an explicit objective, permitted files and tools, and acceptance checks. Specialists complete assignments themselves. Design requires the user's approved option, security stays defensive, static, and read-only, and test children edit only assigned test files and use local fakes. X research stays read-only. Sending or publishing requires explicit consent for the destination channel and account, content, and action.
+
+Native delegation requires the actual registered child with its model and effort, plus enforceable sandbox, tool, and file limits. Otherwise the parent returns the exact assignment to the main session, which launches that child if it can enforce the same limits and sends the evidence back to the parent. If a child is unavailable, the parent works within its own approved scope or reports the gap. The parent aggregates the evidence for `supervisor-review`.
+
+For a fake payment webhook and checkout, `tester` can assign webhook contract checks to `test-api` and checkout flow checks to `test-e2e`. The children edit separate test files and use a fake provider. `tester` combines the actual check results for `supervisor-review`. Any follow-up fix goes through `tester` to the child that owned the check.
+
 ### Agents
 
 | Agent | What it does | Model | Skills it uses |
 |---|---|---|---|
+| `architect` | Read-only architecture decisions, trade-offs, migration plans | opus | (none listed) |
 | `backend` | Server code, APIs, business logic (Go, Python, Node/TypeScript) | sonnet | karpathy-guidelines |
 | `database` | Schema, migrations, queries, indexes | sonnet | karpathy-guidelines, careful |
 | `debugger` | Finds the root cause of a bug and makes a minimal fix | opus | karpathy-guidelines |
 | `design` | UI/UX design, design systems, visual review | opus | karpathy-guidelines, animate, animate-expo, apple-design, emil-design-eng |
 | `devops` | CI/CD, deployment files, Docker | sonnet | karpathy-guidelines, careful |
-| `docs` | README, CLAUDE.md and project docs. Never edits source code. | sonnet | karpathy-guidelines, asd-ste100 |
+| `docs` | Developer docs, tested API references and quickstarts | sonnet | karpathy-guidelines, asd-ste100 |
 | `frontend` | Web UI in React, Next.js, Vue/Nuxt, HTML, CSS | sonnet | karpathy-guidelines, browse |
 | `marketing` | Strategy, positioning, campaigns, launch plans | sonnet | (none listed) |
 | `mobile` | Swift/SwiftUI, Kotlin/Compose, Flutter/Dart apps | opus | karpathy-guidelines, write-swift |
+| `payments` | Checkout, billing, and reconciliation with fake providers | opus | (none listed) |
 | `planner` | PRDs, specs, technical plans | opus | karpathy-guidelines, asd-ste100 |
+| `product` | Discovery, requirements, prioritization, and outcomes | opus | (none listed) |
 | `researcher` | Read-only research in code and on the web | sonnet | browse |
-| `security` | Security review. Does not edit project files. | opus | karpathy-guidelines, cso, security-review, security-audit |
+| `security` | Defensive static review of code, configuration, and design | opus | karpathy-guidelines, static guidance as available |
 | `seo` | Keywords, on-page and technical SEO, page speed | sonnet | karpathy-guidelines, browse, benchmark |
 | `supervisor-plan` | Splits multi-step work into parts and waves | opus | asd-ste100 |
 | `supervisor-review` | Reviews worker results against the task | opus | asd-ste100 |
 | `tester` | Writes and runs tests. Edits test files only. | sonnet | karpathy-guidelines |
+| `workflow-optimizer` | Read-only workflow analysis and pilot plans | sonnet | (none listed) |
 | `writing` | Posts and copy for Telegram, LinkedIn and other channels | opus | (none listed) |
 
 Some skills come from gstack and the karpathy plugin (see Dependencies). An agent lists a skill in its file. If the skill is not installed, the agent reports it.
@@ -447,6 +495,7 @@ This runs `git pull --ff-only` in `~/.agentkit`. Then it syncs the files.
 - A file you deleted stays deleted across updates.
 - Hook entries that agentkit marked are refreshed when their path changed.
 - A file removed upstream is removed, if you did not edit it.
+- Agents you excluded stay excluded. If an update makes an excluded agent a dependency of an enabled role, agentkit installs it and explains which role needs it.
 - `agentkit update --force` replaces your edited files, after a backup.
 - `agentkit update --dry-run` shows what would happen.
 

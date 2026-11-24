@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Dict
@@ -29,11 +30,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 
 def load_manifest(path: Path) -> Dict[str, str]:
-    if not path.exists():
-        return {}
-    data = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(data, dict):
-        raise ValueError('invalid manifest object')
+    data = read_manifest(path)
     files = data.get('files', {})
     if not isinstance(files, dict):
         raise ValueError('invalid manifest files')
@@ -54,6 +51,83 @@ def load_manifest(path: Path) -> Dict[str, str]:
     return files
 
 
+def read_manifest(path: Path) -> dict:
+    if linked_parent(path, path.parent.parent):
+        raise ValueError('refusing linked manifest: ' + str(path))
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(data, dict):
+        raise ValueError('invalid manifest object')
+    return data
+
+
+def file_state(path: Path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None, None, None
+    if stat.S_ISLNK(info.st_mode):
+        return None, None, os.readlink(path)
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('must be a regular file: ' + str(path))
+    return path.read_bytes(), stat.S_IMODE(info.st_mode), None
+
+
+class FileChanges:
+    """Stage a target's file changes before publishing its manifest."""
+
+    def __init__(self, backup):
+        self.backup = backup
+        self.entries = {}
+
+    def set(self, path: Path, data, *, backup=None, expected_hash=None):
+        original = file_state(path)
+        if expected_hash is not None and (original[0] is None or
+                hashlib.sha256(original[0]).hexdigest() != expected_hash):
+            raise ValueError('file changed before removal: ' + str(path))
+        if path in self.entries:
+            raise ValueError('more than one managed file resolves to ' + str(path))
+        self.entries[path] = (data, original, backup)
+
+    def commit(self):
+        for path, (_, original, backup) in self.entries.items():
+            if file_state(path) != original:
+                raise ValueError('file changed before installation: ' + str(path))
+            if backup:
+                self.backup(backup)
+        written = []
+        try:
+            for path, (data, original, _) in self.entries.items():
+                if file_state(path) != original:
+                    raise ValueError('file changed during installation: ' + str(path))
+                written.append((path, original))
+                if data is None or original[2] is not None:
+                    path.unlink(missing_ok=True)
+                if data is not None:
+                    atomic_write(path, data)
+        except (Exception, KeyboardInterrupt):
+            failed = []
+            for path, original in reversed(written):
+                try:
+                    if file_state(path) == original:
+                        continue
+                    data, mode, link = original
+                    if data is None:
+                        path.unlink(missing_ok=True)
+                        if link is not None:
+                            path.symlink_to(link)
+                    else:
+                        atomic_write(path, data)
+                        path.chmod(mode)
+                except (OSError, ValueError):
+                    failed.append(str(path))
+            if failed:
+                raise ValueError('installation recovery incomplete for ' + ', '.join(failed)
+                                 + '; see agentkit/backups') from None
+            raise
+
+
 def linked_parent(path: Path, root: Path) -> bool:
     for parent in [path] + list(path.parents)[:len(path.parents)-len(root.parents)]:
         if parent.is_symlink():
@@ -72,8 +146,6 @@ def remove_guarded_tree(path: Path) -> None:
     Only a read-only regular file may have its writable bit restored, and only
     after rmtree fails to unlink that file. Never retry through a reparse point.
     """
-    import stat
-
     root = path.absolute()
 
     def retry_read_only_file(function, filename, error_info):

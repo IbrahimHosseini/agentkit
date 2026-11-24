@@ -79,9 +79,11 @@ try {
         Remove-Item -LiteralPath $taskInstall -Recurse -Force
     }
     Check-Case 'native install from local Git origin' {
-        Invoke-Bootstrap -arguments @('--yes','--target','codex','--skip','gstack','--skip','karpathy')
+        Invoke-Bootstrap -arguments @('--yes','--target','codex','--skip-agent','writing','--skip','gstack','--skip','karpathy')
         Assert-That ($taskExit -eq 0) $taskOutput
         Assert-That (Test-Path -LiteralPath (Join-Path $env:CODEX_HOME 'agents/backend.toml')) 'Codex agent missing'
+        Assert-That (Test-Path -LiteralPath (Join-Path $env:CODEX_HOME 'agents/supervisor-plan.toml')) 'required supervisor missing'
+        Assert-That (-not (Test-Path -LiteralPath (Join-Path $env:CODEX_HOME 'agents/writing.toml'))) 'excluded agent installed'
         Assert-That (Test-Path -LiteralPath $taskLauncher) 'ordinary user launcher missing'
         Assert-That (-not ((Get-Item -LiteralPath $taskLauncher).Attributes -band [IO.FileAttributes]::ReparsePoint)) 'launcher must not require symlink privileges'
     }
@@ -99,6 +101,7 @@ try {
         Assert-That ($taskExit -eq 0) $taskOutput
         $after = [IO.File]::ReadAllBytes($taskLauncher)
         Assert-That ([Convert]::ToBase64String($before) -eq [Convert]::ToBase64String($after)) 'launcher bytes changed'
+        Assert-That (-not (Test-Path -LiteralPath (Join-Path $env:CODEX_HOME 'agents/writing.toml'))) 'reinstall forgot agent exclusion'
         Assert-That (@(Get-ChildItem -LiteralPath (Split-Path $taskLauncher) -Filter 'agentkit.cmd.bak-*').Count -eq 0) 'unchanged launcher backed up'
     }
     Check-Case 'junction launcher parent is refused without changing outside data' {

@@ -1,3 +1,17 @@
+# Current work: 50-role catalog and specialist routing
+
+Work date: 2026-11-24. The role catalog has 21 roles eligible to own top-level work and 29 specialists. Only `design`, `seo`, `marketing`, `product`, `security`, and `tester` can route approved work to their installed children. The main session or installed workflow provides the active target's eligible roster. Install requirements and dependencies live in `agents/selection.json`. The parent aggregates child evidence and owns the route for review fixes. The README includes a fake payment webhook and checkout example.
+
+The Markdown work adds 33 roles and merges the seven upstream specialties into existing roles. `THIRD_PARTY.md` maps all 40 verified upstream source links and credits the MIT-licensed Agency Agents project. Integration verified source #32 as [Senior SecOps Engineer](https://github.com/msitarzewski/agency-agents/blob/main/security/security-senior-secops.md) and adapted its defensive static review of authentication, sessions, permissions, configuration, and redacted evidence in `security-appsec`. Existing select-install and role changes are part of the worktree and should be preserved.
+
+Verify native delegation with an actual registered child only when the host can enforce its model, effort, sandbox, tools, and assigned file scope. If native delegation lacks those controls, the main session can run the exact role where it can enforce them and return the evidence to the parent. On Codex CLI 0.169, direct nesting preflight could not verify those exact controls. The main-session fallback ran the tester-selected `test-api` and `test-e2e` checks successfully. Claude Code 2.1.325 was not logged in, so native Claude delegation remains unverified. Native Windows remains unverified. Use scratch homes and fake services for repository checks.
+
+The local subscription fixture also exercised a review follow-up through the main session. The original API role received the tester's request for retry evidence. It observed an unknown checkout returning 404, two successful deliveries returning 200, and one activation. The parent aggregated those results and the review passed. The fallback test relaunched closed roles with their earlier reports.
+
+Verification on macOS passed for the 40-source mapping, the 50 role files, and repository validation. The Python suite ran 164 tests with 8 platform skips and no failures. The shell suite passed 88 cases with the known trailing-newline XFAIL (89 total). The interactive family picker also passed its focused terminal rerun. ShellCheck was unavailable.
+
+---
+
 # Current work: prepare agentkit 0.8.0
 
 Work date: 2026-11-22. Release branch `codex/split-supervisor` (PR #14). Version, plugin metadata and changelog are `0.8.0`. The release splits `supervisor` into `supervisor-plan` and `supervisor-review` (17 agents) and lets Codex agents use Claude models through a `claude -p` relay (host runs with `danger-full-access`). Not verified: a real authenticated `claude -p` run; only flag acceptance was checked. Publication is pending: wait for the user to merge PR #14, then tag the merged main commit `v0.8.0` and publish the GitHub release.

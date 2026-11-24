@@ -130,7 +130,7 @@ def render_agent(src, models, kmd, out):
         raise Fail('%s: effort %r not one of %s' % (src, effort, ', '.join(EFFORTS)))
     tools = [t.strip() for t in str(fm.get('tools', '')).split(',')]
     sandbox = 'workspace-write' if ('Edit' in tools or 'Write' in tools) else 'read-only'
-    if name == 'security':
+    if name == 'security' or name.startswith('security-'):
         sandbox = 'read-only'
     # Claude-only config folder -> Codex equivalent
     body = re.sub(r'(?:~|\$HOME)/\.claude/agents/\*\.md', '~/.codex/agents/*.toml', body)
@@ -187,6 +187,23 @@ def region(lines):
 
 def block_names(block):
     return re.findall(r'^\[agents\.([a-z0-9-]+)\]\s*$', block, re.M)
+
+
+def managed_registrations(text, agents_dir):
+    """Read existing registrations that point to the expected managed files."""
+    lines = text.splitlines()
+    r = region(lines)
+    if not r:
+        return set()
+    names = set()
+    for index in range(r[0] + 1, r[1] - 2):
+        match = re.fullmatch(r'\[agents\.([a-z0-9-]+)\]', lines[index])
+        if match:
+            name = match.group(1)
+            if (lines[index + 1].startswith('description = ')
+                    and lines[index + 2] == 'config_file = ' + q(os.path.join(agents_dir, name + '.toml'))):
+                names.add(name)
+    return names.difference(conflicts(lines[:r[0]] + lines[r[1] + 1:], names))
 
 
 def conflicts(outside, names):

@@ -215,6 +215,59 @@ run_pty() {
   RC=$?
   OUT="$(tr -d '\r' < "$T/pty.raw")"
 }
+run_pty_answers() {
+  sandbox_ok
+  local answers="$1"; shift
+  "$PY" -I - "$answers" "$@" > "$T/pty.raw" 2>&1 <<'PYPTY'
+import json
+import os
+import pty
+import re
+import select
+import signal
+import sys
+import time
+
+answers = [(prompt.encode(), response.encode()) for prompt, response in json.loads(sys.argv[1])]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[2], sys.argv[2:])
+deadline = time.monotonic() + 45
+pending = b''
+while True:
+    ready, _, _ = select.select([fd], [], [], max(0, deadline - time.monotonic()))
+    if not ready:
+        os.killpg(pid, signal.SIGTERM)
+        sys.exit('Timed out waiting for installation prompts')
+    try:
+        chunk = os.read(fd, 65536)
+    except OSError:  # Linux reports EIO when the child closes its end.
+        break
+    if not chunk:
+        break
+    sys.stdout.buffer.write(chunk)
+    if answers:
+        pending += chunk
+        prompt, response = answers[0]
+        if prompt in pending:
+            menu, pending = pending.split(prompt, 1)
+            if response.startswith(b'role='):
+                role = response[len(b'role='):]
+                match = re.search(rb'(?m)^[ \t]*(\d+)\. \[[ x]\] ' + re.escape(role) + rb'(?=\s|$)', menu)
+                if not match:
+                    os.killpg(pid, signal.SIGTERM)
+                    sys.exit('Role missing from the displayed picker: ' + role.decode())
+                response = match.group(1)
+            os.write(fd, response + b'\n')
+            answers.pop(0)
+_, status = os.waitpid(pid, 0)
+if answers:
+    sys.exit('Expected prompts were not shown: ' + repr(answers))
+sys.exit(os.waitstatus_to_exitcode(status))
+PYPTY
+  RC=$?
+  OUT="$(tr -d '\r' < "$T/pty.raw")"
+}
 assert_match() { printf '%s\n' "$OUT" | grep -Eq -- "$1" || { fail "${2:-output}: no line matches '$1'"; show_out; }; }
 assert_dir_has() { [ -d "$1" ] || fail "missing folder: $1"; }
 has_esc() { case "$1" in *$'\033'*) return 0 ;; esac; return 1; }
@@ -314,7 +367,7 @@ EOF
   assert_eq "$(n_src "$s" SubagentStop agentkit-agent-log)" 1 "agentkit SubagentStop entries"
   assert_jtrue "$s" "[g for g in d['hooks']['SubagentStop'] if g.get('_agentkit_source') == 'agentkit-agent-log'][0]['hooks'][0] == {'type': 'command', 'command': 'python3 -I \"' + os.environ['AKH'] + '/hooks/agent-log.py\" check || true', 'timeout': 20}"
   # manifest
-  n="$(cd "$AKH" && find agents skills -type f ! -name .DS_Store ! -name '*.pyc' | wc -l | tr -d ' ')"
+  n="$({ find "$AKH/agents" -maxdepth 1 -type f -name '*.md'; find "$AKH/skills" -type f ! -name .DS_Store ! -name '*.pyc'; } | wc -l | tr -d ' ')"
   assert_jtrue "$CLAUDE/agentkit/manifest.json" "d['agentkit_version'] == '$(tr -d '[:space:]' < "$AKH/VERSION")' and len(d['files']) == $n and 'agents/backend.md' in d['files']"
   # link
   [ -L "$HOME/.local/bin/agentkit" ] || fail "link missing"
@@ -383,17 +436,17 @@ t_update_merge() {
   install_user
   assert_rc 0 "install"
   echo "# my edit" >> "$CLAUDE/agents/backend.md"
-  echo "# my edit" >> "$CLAUDE/agents/writing.md"
+  echo "# my edit" >> "$CLAUDE/agents/researcher.md"
   upstream 'echo "<!-- upstream -->" >> agents/frontend.md
     echo "<!-- upstream -->" >> agents/backend.md
-    git rm -q agents/seo.md agents/writing.md
+    git rm -q agents/docs.md agents/researcher.md
     printf -- "---\nname: newagent\ndescription: x\ntools: Read\n---\nbody\n" > agents/newagent.md
     echo "<!-- upstream -->" >> skills/write-swift/SKILL.md
     echo "upstream snippet line" >> templates/CLAUDE.md.snippet'
   run "$AK" update
   assert_rc 0 "update"
   assert_contains "kept your edited agents/backend.md"
-  assert_contains "kept agents/writing.md (removed upstream, but you edited it)"
+  assert_contains "kept agents/researcher.md (removed upstream, but you edited it)"
   assert_grep "$CLAUDE/agents/backend.md" "# my edit"
   assert_nogrep "$CLAUDE/agents/backend.md" "<!-- upstream -->"
   assert_file "$CLAUDE/agents/backend.md.agentkit-new"
@@ -401,12 +454,12 @@ t_update_merge() {
   assert_same "$AKH/agents/frontend.md" "$CLAUDE/agents/frontend.md"
   assert_grep "$CLAUDE/agents/frontend.md" "<!-- upstream -->"
   assert_same "$AKH/agents/newagent.md" "$CLAUDE/agents/newagent.md"
-  assert_nofile "$CLAUDE/agents/seo.md"
-  assert_file "$CLAUDE/agents/writing.md"
+  assert_nofile "$CLAUDE/agents/docs.md"
+  assert_file "$CLAUDE/agents/researcher.md"
   assert_same "$AKH/skills/write-swift/SKILL.md" "$CLAUDE/skills/write-swift/SKILL.md"
   assert_grep "$CLAUDE/CLAUDE.md" "upstream snippet line"
   assert_grep "$CLAUDE/CLAUDE.md" "Be nice."
-  assert_jtrue "$CLAUDE/agentkit/manifest.json" "'agents/newagent.md' in d['files'] and 'agents/seo.md' not in d['files']"
+  assert_jtrue "$CLAUDE/agentkit/manifest.json" "'agents/newagent.md' in d['files'] and 'agents/docs.md' not in d['files']"
   # A second update keeps the edit again.
   run "$AK" update
   assert_rc 0 "second update"
@@ -1299,17 +1352,8 @@ t_requirements_missing_agent_cli() {
   before="$(snap "$HOME")"
   run "$AK" install --yes --skip gstack --skip karpathy
   assert_rc_nz "install without claude and codex"
-  assert_contains "Requirements:"
-  assert_match '^  \+ git +[0-9]' "git row"
-  assert_match '^  x claude +not found, one of claude or codex is required' "claude row"
-  assert_match '^  x codex +not found, one of claude or codex is required' "codex row"
-  assert_contains "How to install what is missing:"
-  assert_contains "curl -fsSL https://claude.ai/install.sh | bash"
-  assert_contains "downloads and runs a remote script"
-  assert_contains "https://github.com/openai/codex"
-  assert_contains "requirements are not met"
-  # --yes never runs a remote script, so curl is never called.
-  assert_contains "No TTY: not running a remote script"
+  assert_contains "no Claude or Codex installation detected"
+  assert_contains "choose --target claude or --target codex"
   assert_nofile "$T/curl.log"
   assert_eq "$(snap "$HOME")" "$before" "a failed requirements check changed files"
   assert_nofile "$CLAUDE"
@@ -1317,7 +1361,7 @@ t_requirements_missing_agent_cli() {
   # The bootstrap script checks too, before it links or installs anything.
   run bash "$AKH/install.sh" --yes --skip gstack --skip karpathy
   assert_rc_nz "install.sh without claude and codex"
-  assert_contains "requirements are not met"
+  assert_contains "no Claude or Codex installation detected"
   assert_nofile "$T/curl.log"
   assert_nofile "$HOME/.local/bin/agentkit"
 }
@@ -1341,7 +1385,7 @@ t_requirements_other_agent_is_enough() {
   # No --target: either agent is enough.
   run "$AK" install --yes --skip gstack --skip karpathy
   assert_rc 0 "install with codex only"
-  assert_match '^  x claude +not found, optional \(the other agent is installed\)' "claude row"
+  assert_match '^  x claude +not found, optional \(not needed for this target\)' "claude row"
   assert_match '^  \+ codex ' "codex row"
   assert_not_contains "How to install what is missing:"
   assert_file "$CODEX/agents/backend.toml"
@@ -1361,8 +1405,7 @@ t_requirements_dry_run_installs_nothing() {
   before="$(snap "$HOME")"
   run "$AK" install --dry-run --yes --skip gstack --skip karpathy
   assert_rc_nz "dry run with unmet requirements"
-  assert_contains "Requirements:"
-  assert_contains "How to install what is missing:"
+  assert_contains "no Claude or Codex installation detected"
   assert_not_contains "Running:"
   assert_nofile "$T/curl.log"
   assert_eq "$(snap "$HOME")" "$before" "dry run changed files"
@@ -1383,12 +1426,12 @@ t_requirements_ok_skips_check_not_detection() {
   assert_contains "Requirements:"
   assert_file "$CODEX/agents/backend.toml"
   assert_nofile "$CLAUDE"
-  # With no agent CLI at all, the default is claude (assumption: documented fallback in select_targets).
+  # With no CLI or desktop app detected, there is no automatic target.
   rm -f "$T/stubs/codex"
   rm -rf "$CODEX"
   AGENTKIT_REQS_OK=1 run "$AK" install --yes --skip gstack --skip karpathy
   assert_rc_nz "install with no CLI cannot bypass requirements"
-  assert_contains "requirements are not met"
+  assert_contains "no Claude or Codex installation detected"
   assert_nofile "$CLAUDE/agents/backend.md"
   assert_nofile "$CODEX"
 }
@@ -1569,13 +1612,13 @@ t_output_markers_and_table() {
   echo "# my edit" >> "$CLAUDE/agents/backend.md"
   upstream 'echo "<!-- upstream -->" >> agents/frontend.md
     echo "<!-- upstream -->" >> agents/backend.md
-    git rm -q agents/seo.md
+    git rm -q agents/researcher.md
     printf -- "---\nname: newagent\ndescription: x\ntools: Read\nmodel: sonnet\n---\nbody\n" > agents/newagent.md'
   run "$AK" update
   assert_rc 0 "update"
   assert_not_contains "  + agents/frontend.md (updated)"
   assert_not_contains "  + agents/newagent.md"
-  assert_not_contains "  + agents/seo.md (removed upstream)"
+  assert_not_contains "  + agents/docs.md (removed upstream)"
   assert_contains "  ! kept your edited agents/backend.md; new version in agents/backend.md.agentkit-new"
   assert_not_contains "agents/debugger.md"
   run "$AK" update --force
@@ -1590,6 +1633,7 @@ t_target_default_detection() {
   run "$AK" install --yes --skip gstack --skip karpathy
   assert_rc 0 "install with claude only"
   assert_file "$CLAUDE/agents/backend.md"
+  assert_grep "$CLAUDE/CLAUDE.md" "<!-- agentkit:start -->"
   assert_nofile "$CODEX"
   assert_not_contains "installing into $CODEX"
   # Add codex: update and doctor still follow the manifests, so claude only.
@@ -1608,6 +1652,8 @@ t_target_default_detection() {
   assert_contains "installing into $CODEX"
   assert_file "$CLAUDE/agents/backend.md"
   assert_file "$CODEX/agents/backend.toml"
+  assert_grep "$CLAUDE/CLAUDE.md" "<!-- agentkit:start -->"
+  assert_grep "$CODEX/AGENTS.md" "<!-- agentkit:start -->"
   # Both are installed now: update and doctor cover both.
   run "$AK" doctor
   assert_rc 0 "doctor with both targets"
@@ -1630,6 +1676,7 @@ t_target_codex_only_cli() {
   run "$AK" install --yes --skip gstack --skip karpathy
   assert_rc 0 "install with codex only"
   assert_file "$CODEX/agents/backend.toml"
+  assert_grep "$CODEX/AGENTS.md" "<!-- agentkit:start -->"
   assert_nofile "$CLAUDE"
   assert_not_contains "karpathy"
 }
@@ -2005,11 +2052,142 @@ t_codex_config_declined() {
   assert_match '^  ! config.toml: skipped$' "config.toml result line"
   assert_contains "the agent files in $CODEX/agents are not registered in config.toml; codex doctor will warn about them"
   assert_match '^codex +config.toml +skipped$' "config.toml row"
-  # update does not add a block the user never accepted.
+  # An unattended update still needs approval to add missing blocks.
   run "$AK" update
   assert_rc 0 "update"
   assert_nofile "$CODEX/config.toml"
   assert_nofile "$CODEX/AGENTS.md"
+  run "$AK" update --dry-run --yes
+  assert_rc 0 "preview repair"
+  assert_contains "[dry-run] config.toml: added agentkit block"
+  assert_contains "[dry-run] AGENTS.md: added agentkit block"
+  assert_nofile "$CODEX/config.toml"
+  assert_nofile "$CODEX/AGENTS.md"
+  run "$AK" update --yes --skip claude-md
+  assert_rc 0 "approve registration only"
+  assert_grep "$CODEX/config.toml" "[agents.backend]"
+  assert_nofile "$CODEX/AGENTS.md"
+  run "$AK" update --yes
+  assert_rc 0 "approve missing workflow"
+  assert_grep "$CODEX/AGENTS.md" "<!-- agentkit:start -->"
+  assert_eq "$(count_of "$CODEX/config.toml" '# agentkit:start')" 1 "one registration block"
+}
+
+t_piped_install_and_update_setting_prompts() {
+  setup_home
+  mk_codex
+  mk_desktop claude
+  mk_desktop codex
+  run_pty_answers '[
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=writing"],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", ""],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=design"],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=frontend"],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=design"],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=mobile"],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=design"],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=frontend"],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=frontend"],
+    ["Role number to toggle, Enter to continue, or 0 to cancel:", ""],
+    ["CLAUDE.md? [y/N]", "y"], ["config.toml? [y/N]", "n"], ["AGENTS.md? [y/N]", "n"]]' \
+    bash -c 'cat "$1" | bash -s -- --skip gstack --skip karpathy --skip hooks' _ "$AKH/install.sh"
+  assert_rc 0 "piped install asks on controlling terminal"
+  assert_grep "$CLAUDE/CLAUDE.md" "<!-- agentkit:start -->"
+  assert_nofile "$CLAUDE/agents/writing.md"
+  assert_file "$CLAUDE/agents/design.md"
+  assert_grep "$STUB_LOG" "codex --version"
+  assert_file "$CODEX/agents/backend.toml"
+  assert_file "$CODEX/agents/tester.toml"
+  assert_file "$CODEX/agents/writing.toml"
+  assert_nofile "$CODEX/agents/design.toml"
+  assert_nofile "$CODEX/agents/frontend.toml"
+  assert_nofile "$CODEX/agents/mobile.toml"
+  assert_match 'design.*[Rr]equired by.*frontend.*mobile' 'shared dependency shows both parents'
+  assert_match 'design.*[Rr]equired by.*mobile' 'shared dependency stays locked after frontend is excluded'
+  assert_nofile "$CODEX/config.toml"
+  assert_nofile "$CODEX/AGENTS.md"
+  assert_contains "AGENTS.md: skipped"
+
+  upstream 'echo "updated Claude workflow" >> templates/CLAUDE.md.snippet'
+  run_pty_answers '[]' bash -c 'exec "$1" update --quiet </dev/null' _ "$AK"
+  assert_rc 0 "background update never asks even with a controlling terminal"
+  assert_grep "$CLAUDE/CLAUDE.md" "updated Claude workflow"
+  assert_nofile "$CODEX/config.toml"
+  assert_nofile "$CODEX/AGENTS.md"
+
+  run_pty_answers '[["config.toml? [y/N]", "n"], ["AGENTS.md? [y/N]", "y"]]' \
+    "$AK" update --target codex
+  assert_rc 0 "manual update asks separately for each missing setting"
+  assert_nofile "$CODEX/config.toml"
+  assert_grep "$CODEX/AGENTS.md" "<!-- agentkit:start -->"
+}
+
+t_piped_agent_selection_cancel_prevents_install() {
+  setup_home
+  mk_codex
+  run_pty_answers '[["Role number to toggle, Enter to continue, or 0 to cancel:", "0"]]' \
+    bash -c 'cat "$1" | bash -s -- --target codex --skip gstack --skip karpathy --skip hooks' _ "$AKH/install.sh"
+  assert_rc_nz "cancelling agent selection stops the bootstrap"
+  assert_nofile "$CODEX"
+  assert_nofile "$HOME/.local/bin/agentkit"
+
+  install_codex
+  assert_rc 0 "install all agents for the reinstall check"
+  local before
+  before="$(snap "$CODEX")"
+  run "$AK" install --target codex --skip-agent writing --skip gstack --skip karpathy
+  assert_rc_nz "removing a managed agent without a terminal requires --yes"
+  assert_contains "confirm the shown agent removals"
+  assert_eq "$(snap "$CODEX")" "$before" "unconfirmed removal changed the installation"
+
+  run_pty_answers '[["Apply the selected exclusions and remove the listed Codex agent files? [y/N]", "n"]]' \
+    "$AK" install --target codex --skip-agent writing --skip gstack --skip karpathy
+  assert_rc_nz "declining a managed agent removal stops reinstall"
+  assert_contains "Will back up and remove codex/agents/writing.toml"
+  assert_eq "$(snap "$CODEX")" "$before" "declined removal changed the installation"
+
+  local writing="$CODEX/agents/writing.toml"
+  cp "$writing" "$T/writing.original"
+  echo '# local edit' >> "$writing"
+  install_codex --skip-agent writing
+  assert_rc 0 "save the exclusion and keep the edited agent"
+  assert_file "$writing"
+  cp "$T/writing.original" "$writing"
+  before="$(snap "$CODEX")"
+  run "$AK" install --target codex --skip gstack --skip karpathy
+  assert_rc_nz "a saved exclusion still requires confirmation before removal"
+  assert_eq "$(snap "$CODEX")" "$before" "unconfirmed saved exclusion changed the installation"
+}
+
+t_update_repairs_custom_workflow() {
+  setup_home
+  mk_codex
+  local claude_home="$T/custom-claude" codex_home="$T/custom-codex"
+  run env CLAUDE_CONFIG_DIR="$claude_home" CODEX_HOME="$codex_home" "$AK" install \
+    --target both --yes --skip claude-md --skip gstack --skip karpathy --skip hooks
+  assert_rc 0 "install without workflow blocks"
+  printf '# My instructions\r\nKeep these.\r\n\r\n\r\n' > "$claude_home/CLAUDE.md"
+  cp "$claude_home/CLAUDE.md" "$T/original"
+  run env CLAUDE_CONFIG_DIR="$claude_home" CODEX_HOME="$codex_home" "$AK" update --target claude --yes
+  assert_rc 0 "repair only selected target at its configured path"
+  "$PY" -I -c 'import pathlib, sys
+before, after = (pathlib.Path(p).read_bytes() for p in sys.argv[1:])
+assert after.startswith(before + b"<!-- agentkit:start -->\r\n")
+' "$T/original" "$claude_home/CLAUDE.md" || fail "adding a block changed existing file bytes"
+  assert_nofile "$codex_home/AGENTS.md"
+  assert_nofile "$CLAUDE"
+  assert_nofile "$CODEX"
+  cp "$claude_home/CLAUDE.md" "$T/restored"
+  run env CLAUDE_CONFIG_DIR="$claude_home" CODEX_HOME="$codex_home" "$AK" update --target claude --yes
+  assert_rc 0 "repeat update"
+  assert_same "$T/restored" "$claude_home/CLAUDE.md"
+
+  printf '# My instructions\n<!-- agentkit:end -->\n' > "$codex_home/AGENTS.md"
+  cp "$codex_home/AGENTS.md" "$T/unbalanced"
+  run env CLAUDE_CONFIG_DIR="$claude_home" CODEX_HOME="$codex_home" "$AK" update --target codex --yes
+  assert_rc_nz "do not repair an unbalanced marker"
+  assert_contains "only one agentkit marker found"
+  assert_same "$T/unbalanced" "$codex_home/AGENTS.md"
 }
 
 t_codex_config_unusable() {
@@ -2069,7 +2247,7 @@ t_codex_update_prunes() {
   assert_rc 0 "install"
   echo "# my edit" >> "$CODEX/agents/backend.toml"
   upstream 'echo "<!-- upstream -->" >> agents/frontend.md
-    git rm -q agents/seo.md
+    git rm -q agents/docs.md agents/researcher.md
     printf -- "---\nname: newagent\ndescription: a new one\ntools: Read\nmodel: sonnet\n---\nbody\n" > agents/newagent.md
     echo "upstream snippet line" >> templates/AGENTS.md.snippet'
   run "$AK" update
@@ -2078,20 +2256,21 @@ t_codex_update_prunes() {
   assert_not_contains "$CLAUDE"
   assert_not_contains "  + agents/frontend.toml (updated)"
   assert_not_contains "  + agents/newagent.toml"
-  assert_not_contains "  + agents/seo.toml (removed upstream)"
+  assert_not_contains "  + agents/docs.toml (removed upstream)"
   assert_contains "  ! kept your edited agents/backend.toml"
   assert_grep "$CODEX/agents/frontend.toml" "<!-- upstream -->"
   assert_file "$CODEX/agents/newagent.toml"
-  assert_nofile "$CODEX/agents/seo.toml"
+  assert_nofile "$CODEX/agents/docs.toml"
+  assert_nofile "$CODEX/agents/researcher.toml"
   assert_grep "$CODEX/agents/backend.toml" "# my edit"
   assert_file "$CODEX/agents/backend.toml.agentkit-new"
   # the block follows the agent set
   assert_grep "$CODEX/config.toml" "[agents.newagent]"
-  assert_nogrep "$CODEX/config.toml" "[agents.seo]"
-  assert_nogrep "$CODEX/config.toml" "seo.toml"
+  assert_nogrep "$CODEX/config.toml" "[agents.docs]"
+  assert_nogrep "$CODEX/config.toml" "docs.toml"
   assert_eq "$(count_of "$CODEX/config.toml" '# agentkit:start')" 1 "config.toml start markers"
   assert_grep "$CODEX/AGENTS.md" "upstream snippet line"
-  assert_jtrue "$CODEX/agentkit/manifest.json" "'agents/newagent.toml' in d['files'] and 'agents/seo.toml' not in d['files']"
+  assert_jtrue "$CODEX/agentkit/manifest.json" "'agents/newagent.toml' in d['files'] and 'agents/docs.toml' not in d['files']"
   assert_nofile "$CLAUDE"
   # a second update has nothing new to say about files
   run "$AK" update
@@ -2108,12 +2287,26 @@ t_codex_update_user_removed_block_stays() {
   install_codex
   "$PY" -I "$AKH/lib/codex.py" config-del "$CODEX/config.toml" write > /dev/null
   rm -f "$CODEX/config.toml.empty"
-  local before
-  before="$(snap "$CODEX")"
+  local before after backup
+  printf '\nUser-owned workflow note.\n' >> "$CODEX/AGENTS.md"
+  cp "$CODEX/AGENTS.md" "$T/workflow.before"
+  # Removing the registration makes the installed roster empty. Only its
+  # managed instruction block and the corresponding backup should change.
+  before="$(snap "$CODEX" | awk -F '\t' '$1 != "AGENTS.md" && $1 != "agentkit/backups" && $1 !~ /^agentkit\/backups\/[^/]+\/AGENTS\.md$/')"
   run "$AK" update
   assert_rc 0 "update"
   assert_nogrep "$CODEX/config.toml" "agentkit:start"
-  assert_eq "$(snap "$CODEX")" "$before" "update re-added files or blocks the user removed"
+  assert_grep "$CODEX/AGENTS.md" "No installed family routes are available."
+  assert_grep "$CODEX/AGENTS.md" "User-owned workflow note."
+  assert_nogrep "$CODEX/AGENTS.md" "Installed candidates for"
+  backup="$(find "$CODEX/agentkit/backups" -name AGENTS.md)"
+  assert_same "$T/workflow.before" "$backup"
+  after="$(snap "$CODEX" | awk -F '\t' '$1 != "AGENTS.md" && $1 != "agentkit/backups" && $1 !~ /^agentkit\/backups\/[^/]+\/AGENTS\.md$/')"
+  assert_eq "$after" "$before" "update changed files outside the managed roster and its backup"
+  before="$(snap "$CODEX")"
+  run "$AK" update
+  assert_rc 0 "repeat update"
+  assert_eq "$(snap "$CODEX")" "$before" "repeat update changed the target"
 }
 
 t_codex_uninstall_restores_originals() {
@@ -2316,17 +2509,38 @@ t_requirements_target_both() {
   assert_nofile "$T/curl.log"
 }
 
-t_requirements_auto_installs_only_what_it_may() {
+t_requirements_auto_handles_desktop_without_cli() {
   setup_home
-  rm -f "$T/stubs/claude"
-  mk_brew; mk_curl
-  # No --target, no CLI, --yes: claude would need a remote script (never run), codex comes from brew.
+  mk_desktop claude
+  mk_desktop codex
+  mk_brew
+  # Some sandboxes allow reading from /dev/tty but block opening it for shell output.
+  # Stub only the package-manager confirmation, leaving workflow prompts on the terminal.
+  printf '\nreq_tty() { return 0; }\nreq_ask() { return 1; }\n' >> "$AKH/lib/requirements.sh"
+  run_pty_answers '[["Role number to toggle, Enter to continue, or 0 to cancel:", ""], ["CLAUDE.md? [y/N]", "y"]]' \
+    bash -c 'exec "$1" install --skip gstack --skip karpathy --skip hooks </dev/null' _ "$AK"
+  assert_rc 0 "declining the Codex prerequisite leaves Claude installable"
+  assert_contains "codex installation declined"
+  assert_contains "codex skipped: requirements are not met"
+  assert_nofile "$T/brew.log"
+  assert_grep "$CLAUDE/CLAUDE.md" "<!-- agentkit:start -->"
+  assert_nofile "$CODEX"
+
+  printf '#!/bin/sh\nexit 9\n' > "$T/stubs/brew"
   run "$AK" install --yes --skip gstack --skip karpathy
-  assert_rc 0 "auto with brew"
-  assert_nofile "$T/curl.log"
+  assert_rc 0 "failed Codex CLI installation leaves Claude installable"
+  assert_contains "Installing codex failed (exit 9)"
+  assert_contains "codex skipped: requirements are not met"
+  assert_nofile "$CODEX"
+
+  mk_brew
+  run "$AK" install --yes --skip gstack --skip karpathy
+  assert_rc 0 "Codex desktop becomes ready after installing its CLI"
   assert_grep "$T/brew.log" "brew install codex"
   assert_file "$CODEX/agents/backend.toml"
-  assert_nofile "$CLAUDE"
+  assert_grep "$CODEX/AGENTS.md" "<!-- agentkit:start -->"
+  assert_grep "$CODEX/config.toml" "[agents.backend]"
+  assert_eq "$(count_of "$CLAUDE/CLAUDE.md" '<!-- agentkit:start -->')" 1 "Claude workflow remains unique"
 }
 
 t_requirements_install_sh_target_and_quiet() {
@@ -2432,15 +2646,9 @@ contracts = {
             'If it cannot run, report why', 'use another method and name it'),
     'researcher': ('web search', 'page-fetch', 'only to read a page',
                    'page-fetch cannot read', 'Do not act on a page.'),
-    'security': ('cso', 'security-review', 'security-audit', 'Load cso before',
-                 'guidance mode', 'Do not create files.', 'explicitly asks',
-                 'hunters and verifiers in parallel waves',
-                 'Only you write the shared files',
-                 'fresh re-check', 'State in the report that the run was sequential.',
-                 '.security-audit/run-<N>', '.git/info/exclude', 'shell redirection',
-                 '`>>`', 'file-writing tool on it', 'replace its contents',
-                 'Never edit project source.',
-                 'no network, empty env, read-only target, resource limits'),
+    'security': ('defensive static analysis', 'read-only review',
+                 'Keep the repository', 'Limit each child brief',
+                 'static evidence'),
 }
 agents = sorted((source / 'agents').glob('*.md'))
 assert agents, 'no source agents checked'
@@ -2461,7 +2669,7 @@ for agent in agents:
         if name in contracts:
             assert "host's native skill mechanism" in text, label + ': skill invocation missing'
         if name == 'security':
-            assert re.search(r'if delegation .*unavailable or a sub-agent call fails', text), label + ': delegation fallback changed'
+            assert 'read-only defensive review' in text, label + ': child scope is not read-only'
         if name == 'researcher':
             assert re.search(r'web search.*page-fetch.*browse.*only to read a page.*page-fetch cannot read', text), label + ': page-fetch fallback order changed'
         if name in ('frontend', 'seo'):
@@ -2481,12 +2689,9 @@ t_codex_rendered_agents_have_no_claude_paths() {
     if grep -qF '.claude/' "$f"; then bad="$bad $(basename "$f")"; fi
   done
   assert_eq "$bad" "" "rendered agents that still mention .claude/"
-  # supervisor-plan.md reads the agent definitions: it must point at the Codex ones.
-  # These assertions match literal tilde paths in the instructions, not expanded HOME paths.
-  # shellcheck disable=SC2088
-  assert_grep "$AKH/agents/supervisor-plan.md" "~/.claude/agents/*.md"
-  # shellcheck disable=SC2088
-  assert_grep "$CODEX/agents/supervisor-plan.toml" "~/.codex/agents/*.toml"
+  # The role follows the active host's installed definitions, supplied by the workflow.
+  assert_grep "$AKH/agents/supervisor-plan.md" "effective installed definitions"
+  assert_grep "$CODEX/agents/supervisor-plan.toml" "effective installed definitions"
   # shellcheck disable=SC2088
   assert_nogrep "$CODEX/agents/supervisor-plan.toml" "~/.claude"
 }
@@ -2619,6 +2824,9 @@ t_codex_install_dry_run
 t_codex_config_agent_conflict
 t_codex_foreign_agent_file
 t_codex_config_declined
+t_piped_install_and_update_setting_prompts
+t_piped_agent_selection_cancel_prevents_install
+t_update_repairs_custom_workflow
 t_codex_config_unusable
 t_codex_doctor
 t_codex_update_prunes
@@ -2631,7 +2839,7 @@ t_install_sh_requirements_block_matches_lib
 t_requirements_target_claude
 t_requirements_target_codex
 t_requirements_target_both
-t_requirements_auto_installs_only_what_it_may
+t_requirements_auto_handles_desktop_without_cli
 t_requirements_install_sh_target_and_quiet
 t_requirements_doctor_target
 t_quiet_still_shows_hook_preview_before_a_prompt

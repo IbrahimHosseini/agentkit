@@ -183,6 +183,164 @@ class NativeLifecycleTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256((target / key).read_bytes()).hexdigest(), value)
         self.cli('doctor', '--target', 'both')
 
+    def test_agent_exclusions_apply_to_both_targets_and_survive_update(self):
+        excluded = ('frontend', 'mobile', 'design')
+        options = [arg for name in excluded for arg in ('--skip-agent', name)]
+        self.install('both', *options)
+        required = ('supervisor-plan', 'supervisor-review', 'backend', 'database', 'security', 'tester')
+
+        def check_installation():
+            for target, ext, workflow in ((self.codex, 'toml', 'AGENTS.md'), (self.claude, 'md', 'CLAUDE.md')):
+                manifest = json.loads((target / 'agentkit/manifest.json').read_text(encoding='utf-8'))
+                for name in required:
+                    self.assertTrue((target / f'agents/{name}.{ext}').is_file(), name)
+                for name in excluded:
+                    self.assertFalse((target / f'agents/{name}.{ext}').exists(), name)
+                    self.assertNotIn(f'agents/{name}.{ext}', manifest['files'])
+                instructions = (target / workflow).read_text(encoding='utf-8')
+                roles = next(line for line in instructions.splitlines() if line.startswith('Pick agent'))
+                self.assertIn('backend', roles)
+                for name in excluded:
+                    self.assertNotIn(name, roles)
+            config = (self.codex / 'config.toml').read_text(encoding='utf-8')
+            for name in required:
+                self.assertIn(f'[agents.{name}]', config)
+            for name in excluded:
+                self.assertNotIn(f'[agents.{name}]', config)
+
+        check_installation()
+        diagnostics = self.cli('doctor', '--target', 'both').stdout
+        for name in excluded:
+            self.assertIn(f'agent {name}: excluded by selection', diagnostics)
+        self.publish_agent_change()
+        self.cli('update', '--target', 'both')
+        self.install('both')
+        check_installation()
+        self.assertIn(b'Offline upstream update.', (self.claude / 'agents/backend.md').read_bytes())
+        models = self.cli('models', '--target', 'both', '--yes').stdout
+        for name in excluded:
+            self.assertNotRegex(models, rf'(?m)^(?:claude|codex)\s+{name}\s+')
+        (self.codex / 'agents/tester.toml').unlink()
+        self.assertIn('agent tester: missing', self.cli('doctor', '--target', 'codex', expected=1).stdout)
+
+    def test_update_installing_a_new_dependency_preserves_the_saved_exclusion(self):
+        self.install('codex', '--skip-agent', 'writing')
+        agent = self.codex / 'agents/writing.toml'
+        self.assertFalse(agent.exists())
+
+        publisher = self.scratch / 'publisher'
+        self.git_run('clone', '-q', str(self.origin), str(publisher))
+        catalog = publisher / 'agents/selection.json'
+        rules = json.loads(catalog.read_text(encoding='utf-8'))
+        rules['dependencies']['frontend'].append('writing')
+        catalog.write_text(json.dumps(rules), encoding='utf-8')
+        self.git_run('commit', '-qam', 'Require writing for frontend', cwd=publisher)
+        self.git_run('push', '-q', 'origin', 'HEAD:main', cwd=publisher)
+
+        output = self.cli('update', '--target', 'codex').stdout
+        self.assertTrue(agent.is_file())
+        self.assertRegex(output, r'writing.*required by frontend')
+        manifest = json.loads((self.codex / 'agentkit/manifest.json').read_text(encoding='utf-8'))
+        self.assertEqual(manifest['excluded_agents'], ['writing'])
+        self.cli('doctor', '--target', 'codex')
+
+    def test_family_subset_rosters_follow_installed_roles_on_both_hosts(self):
+        excluded = ('design-ux-research', 'marketing-x-research', 'test-api')
+        options = [arg for name in excluded for arg in ('--skip-agent', name)]
+        self.install('both', *options)
+
+        for target, extension, workflow in (
+            (self.codex, 'toml', 'AGENTS.md'),
+            (self.claude, 'md', 'CLAUDE.md'),
+        ):
+            with self.subTest(target=target.name):
+                prompt = (target / workflow).read_text(encoding='utf-8')
+                self.assertIn('Installed candidates for `design` are `design-ux-architecture`.', prompt)
+                self.assertNotIn('`design-ux-research`', prompt)
+                self.assertNotIn('`marketing-x-research`', prompt)
+                specialist_roster = next(line for line in prompt.splitlines()
+                                         if line.startswith('Direct specialist roles include '))
+                self.assertNotIn('`test-api`', specialist_roster)
+                self.assertTrue((target / f'agents/design-ux-architecture.{extension}').is_file())
+                self.assertFalse((target / f'agents/design-ux-research.{extension}').exists())
+                self.assertTrue((target / f'agents/tester.{extension}').is_file())
+                self.assertFalse((target / f'agents/test-api.{extension}').exists())
+
+        edited = self.codex / 'agents/design-ux-architecture.toml'
+        original = edited.read_bytes()
+        edited.write_bytes(original + b'\n# user edit\n')
+        self.cli('uninstall', '--target', 'both', '--yes')
+        self.assertTrue(edited.is_file(), 'edited specialist must survive uninstall')
+        self.assertIn(b'# user edit', edited.read_bytes())
+        self.assertFalse((self.claude / 'agents/design-ux-architecture.md').exists())
+
+    def test_agent_exclusions_reject_locked_and_unknown_roles_without_writes(self):
+        before = tree_bytes(self.home)
+        args = ('install', '--target', 'codex', '--yes', '--skip', 'gstack', '--skip', 'karpathy')
+        for name in ('supervisor-plan', 'supervisor-review', 'design', 'database', 'security', 'tester', 'unknown-role'):
+            with self.subTest(name=name):
+                result = self.cli(*args, '--skip-agent', name, expected=1)
+                self.assertIn(name, result.stdout)
+                self.assertEqual(tree_bytes(self.home), before)
+        self.cli('update', '--skip-agent', 'writing', expected=1)
+        self.assertEqual(tree_bytes(self.home), before)
+
+    def test_agent_reselection_removes_only_unchanged_managed_files(self):
+        self.install('both')
+        unchanged = self.codex / 'agents/writing.toml'
+        original = unchanged.read_bytes()
+        edited = self.codex / 'agents/marketing.toml'
+        custom = edited.read_bytes() + b'\n# user edit\n'
+        edited.write_bytes(custom)
+        config = self.codex / 'config.toml'
+        standalone_config = b'# user config\nmodel = "user-model"\n\n'
+        config.write_bytes(standalone_config + config.read_bytes())
+        options = ('--skip-agent', 'writing', '--skip-agent', 'marketing')
+
+        before = tree_bytes(self.home)
+        preview = self.install('codex', '--dry-run', *options).stdout
+        self.assertIn('writing', preview)
+        self.assertEqual(tree_bytes(self.home), before)
+
+        self.install('codex', *options)
+        self.assertFalse(unchanged.exists())
+        self.assertEqual(edited.read_bytes(), custom)
+        self.assertTrue((self.claude / 'agents/writing.md').is_file())
+        self.assertTrue(any(path.read_bytes() == original
+                            for path in (self.codex / 'agentkit/backups').rglob('writing.toml')))
+        self.assertTrue(config.read_bytes().startswith(standalone_config))
+        self.assertNotIn(b'[agents.writing]', config.read_bytes())
+        self.assertNotIn(b'[agents.marketing]', config.read_bytes())
+        self.cli('doctor', '--target', 'both')
+
+        self.install('codex', '--skip-agent', 'marketing')
+        self.assertTrue(unchanged.is_file())
+        self.assertIn(b'[agents.writing]', config.read_bytes())
+        self.assertEqual(edited.read_bytes(), custom)
+
+    def test_project_agent_selection_is_independent_of_global_claude_selection(self):
+        self.install('claude', '--skip-agent', 'writing')
+        project = self.scratch / 'project'
+        project.mkdir()
+        project_args = ('--project', str(project))
+        self.install('claude', *project_args, '--skip-agent', 'marketing')
+        self.cli('update', *project_args)
+        self.cli('doctor', *project_args)
+        self.assertTrue((self.claude / 'agents/marketing.md').is_file())
+        self.assertFalse((self.claude / 'agents/writing.md').exists())
+        self.assertFalse((project / '.claude/agents/marketing.md').exists())
+        self.assertTrue((project / '.claude/agents/writing.md').is_file())
+
+    def test_invalid_registration_preserves_agent_during_reselection(self):
+        self.install('codex')
+        config = self.codex / 'config.toml'
+        config.write_bytes(config.read_bytes().replace(b'# agentkit:end', b'# damaged end marker'))
+        before = tree_bytes(self.codex)
+        result = self.cli('install', '--target', 'codex', '--yes', '--skip', 'gstack', '--skip', 'karpathy',
+                          '--skip-agent', 'writing', expected=1)
+        self.assertIn('config.toml', result.stdout)
+        self.assertEqual(tree_bytes(self.codex), before)
+
     def test_doctor_reports_version_dirty_clone_and_path_without_failing(self):
         self.install()
         manifest = self.codex / 'agentkit/manifest.json'

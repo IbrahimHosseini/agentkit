@@ -12,6 +12,11 @@ def rd(p):
         return None
 
 
+def line_ending(text):
+    match = re.search(r'\r?\n', text)
+    return match.group() if match else '\n'
+
+
 def wr(p, s):
     p = os.path.realpath(p)  # never replace a symlink, write through it
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -145,7 +150,8 @@ def main(a):
     elif c == 'block-put':
         path, snip, mode = a[1:4]
         s = rd(path) or ''
-        block = START + '\n' + (rd(snip) or '').rstrip('\n') + '\n' + END
+        newline = line_ending(s)
+        block = newline.join([START, *(rd(snip) or '').splitlines(), END])
         m = re.search(re.escape(START) + r'.*?' + re.escape(END), s, re.S)
         if m:
             new = s[:m.start()] + block + s[m.end():]
@@ -153,7 +159,12 @@ def main(a):
         elif START in s or END in s:
             raise ValueError('only one agentkit marker found; fix the file by hand')
         else:
-            new = (s.rstrip('\n') + '\n\n' if s.strip() else '') + block + '\n'
+            prefix = s
+            if prefix and not prefix.endswith(newline):
+                prefix += newline
+            if prefix and not prefix.endswith(newline * 2):
+                prefix += newline
+            new = prefix + block + newline
             status = 'added'
         if mode == 'write' and status != 'unchanged':
             wr(path, new)
@@ -165,9 +176,10 @@ def main(a):
         if not m:
             print('none')
             return
-        before, after = s[:m.start()].rstrip('\n'), s[m.end():].lstrip('\n')
-        new = before + ('\n\n' if before and after else '') + after
-        new = new + '\n' if new else ''
+        newline = line_ending(s)
+        before, after = s[:m.start()].rstrip('\r\n'), s[m.end():].lstrip('\r\n')
+        new = before + (newline * 2 if before and after else '') + after
+        new = new + newline if new else ''
         status = 'removed' if new.strip() else 'removed-empty'
         if mode == 'write':
             if new.strip():

@@ -1,13 +1,33 @@
 # Multi-agent workflow (agentkit)
-This section and "Agent management" apply to the main session only. If you are a subagent, skip them.
+The main session owns planning, approvals and Agent management. Approved parents and children follow the Family assignments section within their assigned scope.
+
+<!-- agentkit:claude-target -->
+
+Before launching any agent, including supervisor-plan and supervisor-review, read its effective installed definition from `agents/<role>.md` under this workflow's target. Use the running host to check for a shadowing definition. Select the verified role with its actual model, effort and tool permissions. If effort is omitted, verify the host's effective inherited effort. Ordinary top-level assignments use the installed role's selected model settings, including a configured cross-provider relay.
+
 For any task that changes code or has several steps (not quick questions or one-line edits), I authorize subagents, with this process:
 1. Run the supervisor-plan agent. It splits the task into parts and parallel waves. Skip supervisor-plan and do the task directly if it touches 3 files or fewer, in one area, with no schema or auth change. Say so in one line.
 2. Show me the plan: number of agents, waves, and what each agent does. Ask me the option for each part marked NEEDS_SKILL_CHOICE. If I pick shadcn, name package.json and the config files in the assignment. If a part needs an install, ask me to approve the packages, and write `Install approved: <packages>` in the assignment. Wait for my approval before you start any worker. I can change the plan.
 3. Run the approved workers. Run parts in the same wave in parallel. Two parts never edit the same file.
 4. Send the original task, all worker reports and the base SHA (HEAD before step 3, if the project uses git) to the supervisor-review agent.
-5. For each FIX, send it to the worker that owns the part with SendMessage, using its agent ID. If SendMessage is missing or fails, start a new agent with the earlier report and the FIX. Then run supervisor-review again. Stop after 2 rounds and report what is open.
+5. For each FIX, send it to the worker that owns the part, through its parent when a family did the work. Prefer SendMessage to the earlier agent ID when its settings and scope still match. Otherwise relaunch the same role with the earlier report and FIX under the same controls. Then run supervisor-review again. Stop after 2 rounds and report what is open.
 6. Tell me the result, the verdict, and anything unresolved.
-Pick agents by task: backend, frontend, mobile, design, marketing, writing, security, seo, devops, docs, database, researcher, tester, debugger, planner (PRDs and plans).
+Pick agents by task: supervisor-plan, supervisor-review, backend, frontend, mobile, design, marketing, writing, security, seo, devops, docs, database, researcher, tester, debugger, planner (PRDs and plans), architect, payments, workflow-optimizer, product.
+<!-- agentkit:specialist-roster -->
+
+## Family assignments
+
+<!-- agentkit:family-roster -->
+
+Only parents listed in this workflow's family roster can delegate, and only to their own listed children. This exception applies once the main session has approved the parent's scope. A parent can handle a small task itself or choose installed children for bounded work. Children return evidence to the parent and cannot delegate. The main session may also assign any available role directly.
+
+Use this installed Claude workflow as the source for dispatch. Before giving the parent its roster, filter the installed candidates against their current model, permissions, and registration. Apply the family launch checks below and pass only eligible roles. Verify that the parent and candidate files are still regular managed files under this workflow's target, match their entries in that target's `agentkit/manifest.json`, and resolve to those roles in the running host. Repeat the eligibility check before launches and FIXes. A missing, edited, shadowed, excluded or otherwise ineligible role is unavailable for family routing.
+
+- **Assignment** includes parent role, child role, objective, exact files (with read and write scope), inherited permissions and tools, and acceptance checks. Preserve the parent assignment's boundaries and user approvals. Security work is defensive, static and read-only. Testing edits are limited to assigned test files and use fake services.
+- **Launch** uses the native host tool only when it can enforce the actual registration, exact model and effort, sandbox, tools and narrower scope. Otherwise the parent returns the exact child assignment to the main session. The main session checks the approved parent scope and installed route, then launches that child as its own worker if the same launch checks pass. If the child cannot run, the parent works within its own approved scope or reports the gap.
+- **Permissions** for family dispatch must enforce the approved file and tool limits without widening the sandbox. Claude ignores the `Agent(...)` role allowlist inside a spawned subagent. A spawned parent hands its choice to the main session unless another active host control enforces the child restriction and the rest of the approved scope. Reject family launches with ambiguous settings, permission bypass, or an `agentkit:claude:start` or `agentkit:codex:start` relay.
+- **Result** includes parent and child roles, child thread ID when available, files changed, actual check results and open gaps. The main session returns fallback results to the parent. The parent aggregates all results and gives a single report to the main session for `supervisor-review`.
+- **FIX** goes through the same parent and child, with the earlier result and original scope. Use the same eligible thread when possible and the same checked fallback when needed. New scope needs main-session approval.
 
 # Agent management (agentkit)
-The shared agents are installed by agentkit in ~/.claude/agents/. `agentkit update` replaces files that I did not change, and keeps files that I changed. When I ask to add a new agent or change one, do it in that folder, in English, with the same frontmatter format. Show me the file first. Write it after I approve. Update the agent list above when an agent is added or removed. If the change is useful for the whole team, suggest that I send it upstream with `agentkit feedback` or a pull request to IbrahimHosseini/agentkit.
+The shared agents are installed by agentkit in this workflow's target agents directory. `agentkit update` replaces files that I did not change, and keeps files that I changed. When I ask to add a new agent or change one, do it in that folder, in English, with the same frontmatter format. Show me the file first. Write it after I approve. Update the agent list above when an agent is added or removed. If the change is useful for the whole team, suggest that I send it upstream with `agentkit feedback` or a pull request to IbrahimHosseini/agentkit.

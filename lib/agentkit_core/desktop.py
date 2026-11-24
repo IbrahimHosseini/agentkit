@@ -180,11 +180,20 @@ def answer(prompt: str) -> str:
     with terminal() as stream:
         if stream is None:
             raise ValueError('interactive confirmation is unavailable; rerun in a terminal')
-        print(prompt, end='', flush=True)
-        value = stream.readline()
-        if not value:
-            raise ValueError('confirmation input ended; installation was not confirmed')
-        return value.strip()
+        try:
+            return read_answer(stream, prompt).strip()
+        except EOFError:
+            raise ValueError('confirmation input ended; installation was not confirmed') from None
+
+
+def read_answer(stream, prompt: str) -> str:
+    if stream is sys.stdin:
+        return input(prompt)
+    print(prompt, end='', flush=True)
+    value = stream.readline()
+    if not value:
+        raise EOFError
+    return value
 
 
 def discover(home: Optional[Path] = None) -> Dict[str, App]:

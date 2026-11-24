@@ -30,7 +30,8 @@ MODEL_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/@+()\[\]-]{0,255}$')
 OPENAI_MODEL = re.compile(r'^(gpt-|chatgpt-|codex-|o[0-9])', re.I)
 HOST_MODEL = 'sonnet'
 RELAY_START = '<!-- agentkit:codex:start model={model} effort={effort} sandbox={sandbox} tools={tools} -->'
-RELAY_RE = re.compile(r'<!-- agentkit:codex:start model=(\S+) effort=(\S+) sandbox=(\S+) tools=(\S*) -->\n.*?<!-- agentkit:codex:end -->\n*', re.S)
+# The relay adds one newline after its end marker. Preserve any body spacing after it.
+RELAY_RE = re.compile(r'<!-- agentkit:codex:start model=(\S+) effort=(\S+) sandbox=(\S+) tools=(\S*) -->\n.*?<!-- agentkit:codex:end -->\n?', re.S)
 
 
 # The reverse: a Codex agent set to a Claude model stays on its own Codex model
@@ -84,7 +85,8 @@ def relay_block(model, effort, sandbox, tools):
 
 def sandbox_for(fm):
     tools = [t.strip() for t in str(fm.get('tools', '')).split(',')]
-    if fm.get('name') == 'security':
+    name = fm.get('name')
+    if isinstance(name, str) and (name == 'security' or name.startswith('security-')):
         return 'read-only'
     return 'workspace-write' if ('Edit' in tools or 'Write' in tools) else 'read-only'
 
@@ -602,6 +604,9 @@ def gather(lifecycle, installing, targets=None, *, terminal=None):
         raise ValueError('unknown agent: ' + name_filter)
     for target in (targets if targets is not None else lifecycle.targets()):
         home = lifecycle.homes[target]
+        roles = lifecycle.roles(target)
+        if name_filter and name_filter not in roles.active:
+            lifecycle.say(f'{target}/{name_filter}: agent excluded from this installation')
         for state_path in (home / 'agentkit', home / 'agentkit/backups'):
             if linked_parent(state_path, home):
                 raise ValueError('refusing linked state directory: ' + str(state_path))
@@ -628,7 +633,7 @@ def gather(lifecycle, installing, targets=None, *, terminal=None):
                 continue
         for src in sources:
             name = src.stem
-            if name_filter and name != name_filter:
+            if name not in roles.active or (name_filter and name != name_filter):
                 continue
             rel = 'agents/' + name + ('.toml' if target == 'codex' else '.md')
             dest = home / rel
@@ -742,6 +747,40 @@ def configure(lifecycle, installing=False, read=None):
     # installation continues. No choice has been written yet.
 
 
+def preference_bytes(agents):
+    return (json.dumps({'version': 1, 'agents': agents}, indent=2) + '\n').encode('utf-8')
+
+
+def install_choices(lifecycle, batch, preferences):
+    """Validate pending model choices and let the installer render them once."""
+    rows, states, choices = batch
+    target = lifecycle.current
+    home = lifecycle.target
+    for rel, state_key in [('agentkit/manifest.json', 'manifest'), (PREFERENCES, 'preferences')]:
+        if snapshot(home / rel, home) != states[target][state_key]:
+            raise ValueError('configuration changed while selecting models; rerun agentkit install')
+    if target == 'codex':
+        cfg = home / 'config.toml'
+        lines = cfg.read_text(encoding='utf-8').splitlines() if cfg.exists() else []
+        region = codex.region(lines)
+        outside = lines if region is None else lines[:region[0]] + lines[region[1] + 1:]
+        conflicts = codex.conflicts(outside, {name for chosen, name in choices if chosen == target})
+        if conflicts:
+            raise ValueError('agent registration changed while selecting models: ' + ', '.join(conflicts))
+    for row in rows:
+        key = (target, row['name'])
+        if row['target'] != target or key not in choices:
+            continue
+        path = home / row['rel']
+        if snapshot(path, home) != row['before']:
+            raise ValueError('agent changed while selecting models: ' + str(path))
+        if choices[key] is None:
+            preferences.pop(key[1], None)
+        else:
+            preferences[key[1]] = validate_choice(choices[key])
+    return preferences
+
+
 def commit(lifecycle, batch):
     """Commit agents + preferences + manifests together, rolling back on error."""
     if batch is None:
@@ -800,7 +839,7 @@ def commit(lifecycle, batch):
             manifests[target]['files'][row['rel']] = hashlib.sha256(output).hexdigest()
     for target in sorted(changed_targets):
         home = lifecycle.homes[target]
-        writes[home / PREFERENCES] = (json.dumps({'version': 1, 'agents': preferences[target]}, indent=2) + '\n').encode('utf-8')
+        writes[home / PREFERENCES] = preference_bytes(preferences[target])
         writes[home / 'agentkit/manifest.json'] = (json.dumps(manifests[target], indent=2) + '\n').encode('utf-8')
     if lifecycle.args.dry_run:
         for path in writes:
