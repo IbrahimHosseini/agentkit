@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import List
 
 import codex
-from . import desktop, integrations, models, platforms, ui
-from .managed import atomic_write, digest, linked_parent, load_manifest, remove_guarded_tree
+from . import desktop, integrations, models, platforms, selection, ui
+from .managed import FileChanges, atomic_write, digest, linked_parent, load_manifest, read_manifest, remove_guarded_tree
 
 ROOT = Path(__file__).resolve().parents[2]
 START = '<!-- agentkit:start -->'
@@ -27,6 +27,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--target', choices=['claude', 'codex', 'both'])
     p.add_argument('--project', type=Path)
     p.add_argument('--agent', help='Configure one agent (models command only)')
+    p.add_argument('--skip-agent', action='append', default=[],
+                   help='Replace saved exclusions during install. Repeat to exclude multiple roles. '
+                        'Excluding an optional family parent also excludes its children. '
+                        'Excluding a child only excludes that child. '
+                        'Required or dependency-locked roles cannot be excluded.')
     for flag in ['dry-run', 'force', 'quiet', 'purge']:
         p.add_argument('--' + flag, action='store_true')
     p.add_argument('--yes', '-y', action='store_true')
@@ -40,6 +45,8 @@ class Lifecycle:
         self.terminal = ui.Terminal(quiet=args.quiet)
         if args.agent and args.command != 'models':
             raise ValueError('--agent is supported only by agentkit models')
+        if args.skip_agent and args.command != 'install':
+            raise ValueError('--skip-agent is supported only by agentkit install')
         if args.command == 'models' and (args.force or args.purge or args.skip):
             raise ValueError('models does not support --force, --purge or --skip')
         self.root = Path(os.environ.get('AGENTKIT_HOME', ROOT)).resolve()
@@ -57,7 +64,11 @@ class Lifecycle:
         self.version = (self.root / 'VERSION').read_text().strip()
         self.stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         self.current = 'claude'
-        for target_home in ([] if args.command == 'models' else self.homes.values()):
+        state_targets = (args.target,) if args.target in self.homes else self.homes
+        if args.project:
+            state_targets = ('claude',)
+        for target in (() if args.command == 'models' else state_targets):
+            target_home = self.homes[target]
             for state_path in (target_home / 'agentkit', target_home / 'agentkit/backups'):
                 if linked_parent(state_path, target_home):
                     raise ValueError('refusing linked state directory: ' + str(state_path))
@@ -66,6 +77,9 @@ class Lifecycle:
         self.total_steps = 0
         self.apps = desktop.discover() if args.command in ('install', 'doctor') else {}
         self.install_targets = None
+        self.role_choices = {}
+        self.selection_manifest = {}
+        self.previewed_removals = {}
 
     def say(self, text: str) -> None:
         if not self.args.quiet:
@@ -77,7 +91,8 @@ class Lifecycle:
 
     def notify_update_failure(self) -> None:
         if self.args.quiet and not self.args.dry_run:
-            for home in self.homes.values():
+            for target in self.targets():
+                home = self.homes[target]
                 if (home / 'agentkit').is_dir():
                     atomic_write(home / 'agentkit/update-status', b'agentkit: auto-update failed, see update.log\n')
 
@@ -93,6 +108,18 @@ class Lifecycle:
             return False
         return input('[y/N] ').strip().lower() in ('y', 'yes')
 
+    def confirm_setting(self, text: str) -> bool:
+        if self.args.yes:
+            return True
+        # The SessionStart hook runs update --quiet with redirected stdin.
+        if self.args.command == 'update' and self.args.quiet:
+            return False
+        try:
+            return desktop.answer(text + ' [y/N] ').lower() in ('y', 'yes')
+        except ValueError as error:
+            self.say(text + ' ' + str(error) + '. Use --yes to accept.')
+            return False
+
     def targets(self) -> List[str]:
         if self.args.project:
             return ['claude']
@@ -101,9 +128,8 @@ class Lifecycle:
         if self.args.command == 'install':
             if self.install_targets is not None:
                 return self.install_targets
-            found = [t for t in self.homes if platforms.find_command(t) or t in self.apps]
-        else:
-            found = [t for t, home in self.homes.items() if (home / 'agentkit/manifest.json').exists()]
+            return [t for t in self.homes if platforms.find_command(t) or t in self.apps]
+        found = [t for t, home in self.homes.items() if (home / 'agentkit/manifest.json').exists()]
         return found or ['claude']
 
     @property
@@ -138,6 +164,7 @@ class Lifecycle:
         return output.getvalue().strip()
 
     def requirements(self) -> None:
+        self.refresh_install_path()
         self.install_targets = self.targets()
         self.say('Application detection:')
         applications = []
@@ -153,38 +180,65 @@ class Lifecycle:
         if applications:
             self.terminal.table(('Target', 'Application', 'Result'), applications, self.say,
                                 target_column=0, group_by=0)
-        wanted = 'both' if len(self.install_targets) == 2 else self.install_targets[0]
-        if not self.args.target and not self.args.project and not self.apps and len(self.install_targets) == 1:
-            wanted = 'auto'
+        if not self.install_targets:
+            raise ValueError('requirements are not met: no Claude or Codex installation detected; choose --target claude or --target codex to set up a provider')
+        if self.args.target or self.args.project or len(self.install_targets) == 1:
+            self.check_install_requirements(self.install_targets)
+            return
+        ready = []
+        for target in self.install_targets:
+            try:
+                self.check_install_requirements([target])
+            except ValueError as error:
+                self.warn(f'{target} skipped: {error}')
+                self.rows.append((target, 'CLI prerequisites', 'skipped: ' + str(error)))
+            else:
+                ready.append(target)
+        if not ready:
+            raise ValueError('requirements are not met: no detected Claude or Codex CLI is ready')
+        self.install_targets = ready
+
+    def refresh_install_path(self) -> None:
+        if platforms.is_windows():
+            return
+        paths = os.environ.get('PATH', os.defpath).split(os.pathsep)
+        for folder in (self.home / '.local/bin', self.home / '.bun/bin'):
+            if folder.is_dir() and str(folder) not in paths:
+                paths.insert(0, str(folder))
+        os.environ['PATH'] = os.pathsep.join(paths)
+
+    def check_install_requirements(self, targets: List[str]) -> None:
         if not platforms.is_windows():
             # The bootstrap only handles Git/Python. Never trust an environment
             # flag to bypass readiness of a target selected from a desktop app.
+            wanted = 'both' if len(targets) == 2 else targets[0]
             script = '. "$1"; YES="$2" DRY="$3" QUIET="$5" REQ_WANT="$4" check_requirements install'
             proc = platforms.run(['bash', '-c', script, '_', str(self.root / 'lib/requirements.sh'),
                                   str(int(self.args.yes)), str(int(self.args.dry_run)), wanted, str(int(self.args.quiet))])
             if proc.returncode:
                 raise ValueError(f'requirements are not met: CLI prerequisites failed (exit {proc.returncode}); review the missing tools and commands above, then rerun agentkit install')
-            for folder in (self.home / '.local/bin', self.home / '.bun/bin'):
-                if folder.is_dir():
-                    os.environ['PATH'] = str(folder) + os.pathsep + os.environ.get('PATH', '')
+            self.refresh_install_path()
         else:
             if sys.version_info < (3, 9):
                 raise ValueError('Python >= 3.9 is required')
             if not platforms.find_command('git'):
                 raise ValueError('Git is required; install Git for Windows from https://git-scm.com/download/win and reopen your terminal')
-            for target in self.install_targets:
+            for target in targets:
                 if platforms.find_command(target):
                     continue
                 url = 'https://code.claude.com/docs/en/setup' if target == 'claude' else 'https://developers.openai.com/codex/cli/'
                 self.say(target + ' CLI is required. Official installation instructions: ' + url)
-                if self.args.dry_run or not sys.stdin.isatty():
+                with desktop.terminal() as terminal:
+                    interactive = terminal is not None
+                if self.args.dry_run or not interactive:
                     raise ValueError(target + ' CLI not found. Install it using ' + url + ', add it to PATH, then retry')
-                if not self.ask('Install the required ' + target + ' CLI using the official instructions, then recheck?'):
-                    raise ValueError(target + ' CLI installation declined; installation is incomplete. See ' + url)
-                input('Waiting: finish the CLI installation, then press Enter to recheck: ')
-        if wanted == 'auto':
-            self.install_targets = [t for t in self.homes if platforms.find_command(t)] or self.install_targets
-        for target in self.install_targets:
+                try:
+                    if not self.ask('Install the required ' + target + ' CLI using the official instructions, then recheck?'):
+                        raise ValueError(target + ' CLI installation declined; installation is incomplete. See ' + url)
+                    input('Waiting: finish the CLI installation, then press Enter to recheck: ')
+                except EOFError as error:
+                    raise ValueError(target + ' CLI installation could not be confirmed. See ' + url) from error
+        for target in targets:
             error = platforms.command_error(target)
             if error:
                 raise ValueError(target + ' CLI is required: ' + error + '. Check its installation/PATH, then retry.')
@@ -202,8 +256,8 @@ class Lifecycle:
             if self.args.dry_run:
                 self.say('[dry-run] Would offer optional ' + target + ' desktop installation with separate confirmation')
                 continue
-            # Explicit desktop consent is independent of --yes. Piped bootstrap
-            # execution still has an interactive stdin once exec reaches here.
+            # Desktop installation needs separate approval, including from a
+            # controlling terminal when the bootstrap is piped.
             with desktop.terminal() as stream:
                 interactive = stream is not None
             if not interactive:
@@ -226,17 +280,104 @@ class Lifecycle:
             return self.target / 'AGENTS.md'
         return (self.args.project / 'CLAUDE.md') if self.args.project else self.target / 'CLAUDE.md'
 
-    def workflow(self, mode: str) -> None:
-        if 'claude-md' in self.args.skip:
-            return
+    def catalog_roles(self):
+        return tuple(path.stem for path in sorted((self.root / 'agents').glob('*.md')))
+
+    def roles(self, target):
+        if target in self.role_choices:
+            return self.role_choices[target]
+        data = read_manifest(self.homes[target] / 'agentkit/manifest.json')
+        rules = selection.load_rules(self.root)
+        families = selection.load_families(self.root, rules)
+        return selection.resolve(self.catalog_roles(), selection.restore_exclusions(data, target, families), rules)
+
+    def select_roles(self) -> None:
+        names = self.catalog_roles()
+        rules = selection.load_rules(self.root)
+        families = selection.load_families(self.root, rules)
+        explicit = (selection.explicit(names, self.args.skip_agent, rules, families=families)
+                    if self.args.skip_agent else None)
+        with (contextlib.nullcontext(None) if self.args.yes else desktop.terminal()) as stream:
+            for target in self.targets():
+                home = self.homes[target]
+                manifest = home / 'agentkit/manifest.json'
+                self.selection_manifest[target] = models.snapshot(manifest, home)
+                old = load_manifest(manifest)
+                choice = explicit or self.roles(target)
+
+                def preview(proposed, say):
+                    removals = set()
+                    for role in sorted(set(names) - proposed.active):
+                        rel = selection.agent_rel(role, target)
+                        status = selection.removal_status(home / rel, home, old.get(rel))
+                        if status == 'owned':
+                            removals.add(rel)
+                            say(f'  Will back up and remove {target}/{rel}')
+                        elif status != 'missing':
+                            say(f'  Will keep {target}/{rel} ({status} file)')
+                    self.previewed_removals[target] = removals
+                    return bool(removals)
+
+                if stream is not None and explicit is None:
+                    choice = selection.choose(target, names, choice, rules,
+                                              lambda prompt: desktop.read_answer(stream, prompt), print, preview,
+                                              families=families)
+                else:
+                    say = print if stream is not None else self.say
+                    say(f'Agent selection for {target.capitalize()}')
+                    selection.summary(names, choice, say)
+                    removals = preview(choice, say)
+                    if removals and not (self.args.yes or self.args.dry_run):
+                        if stream is None:
+                            raise ValueError('confirm the shown agent removals in a terminal or rerun with --yes')
+                        prompt = f'Apply the selected exclusions and remove the listed {target.capitalize()} agent files? [y/N] '
+                        try:
+                            answer = desktop.read_answer(stream, prompt).strip().lower()
+                        except EOFError:
+                            raise ValueError('agent selection cancelled (input ended)') from None
+                        if answer not in ('y', 'yes'):
+                            raise ValueError('agent selection cancelled')
+                self.role_choices[target] = choice
+
+    def workflow(self, mode: str, temporary=None, changes=None, roles=None, filtered=False, *,
+                 families=None) -> None:
         path = self.instruction_path()
+        if 'claude-md' in self.args.skip:
+            if filtered and START in (integrations.rd(str(path)) or ''):
+                self.warn(f'{path.name} was skipped and may still list excluded roles')
+            return
         if mode != 'uninstall' and self.total_steps:
             self.step += 1
             label = self.terminal.target_label(self.current.capitalize())
             self.say(f'[{self.step}/{self.total_steps}] {label}: {path.name}')
         snip = self.root / 'templates' / ('AGENTS.md.snippet' if self.current == 'codex' else 'CLAUDE.md.snippet')
-        if mode == 'update' and START not in (path.read_text(encoding='utf-8') if path.exists() else ''):
-            return
+        if roles is not None:
+            snippet = snip.read_text(encoding='utf-8').splitlines(keepends=True)
+            specialist_roles = roles.intersection(child for members in (families or {}).values() for child in members)
+            direct_roles = roles - specialist_roles
+            routes = []
+            for parent, members in (families or {}).items():
+                children = [child for child in members if child in roles]
+                if parent in roles and children:
+                    routes.append(f'- Installed candidates for `{parent}` are ' + ', '.join(f'`{child}`' for child in children) + '.\n')
+            for index, line in enumerate(snippet):
+                if line.startswith(('Pick agent roles by task: ', 'Pick agents by task: ')):
+                    prefix, entries = line.rstrip().removesuffix('.').split(': ', 1)
+                    entries = [entry for entry in entries.split(', ') if entry.split() and entry.split()[0] in direct_roles]
+                    recommended = {entry.split()[0] for entry in entries}
+                    entries += sorted(direct_roles - recommended)
+                    snippet[index] = prefix + ': ' + (', '.join(entries) + '.' if entries else 'none available.') + '\n'
+                elif line.startswith('<!-- agentkit:specialist-roster -->'):
+                    specialists = ', '.join(f'`{role}`' for role in sorted(specialist_roles))
+                    snippet[index] = f'Direct specialist roles include {specialists}.\n' if specialists else ''
+                elif line.startswith('<!-- agentkit:family-roster -->'):
+                    snippet[index] = ''.join(routes) or 'No installed family routes are available.\n'
+                elif line.startswith('<!-- agentkit:claude-target -->'):
+                    scope = ('the project’s `.claude` directory beside this `CLAUDE.md`'
+                             if self.args.project else 'the active Claude configuration directory containing this `CLAUDE.md`')
+                    snippet[index] = f'The agentkit target for this workflow is {scope}.\n'
+            snip = temporary / snip.name
+            snip.write_text(''.join(snippet), encoding='utf-8')
         args = ['block-del', str(path), 'check'] if mode == 'uninstall' else ['block-put', str(path), str(snip), 'check']
         status = self.helper(args)
         if status in ('none', 'unchanged'):
@@ -244,20 +385,36 @@ class Lifecycle:
                 self.detail('  = ' + path.name + ': block already up to date')
                 self.rows.append((self.current, path.name, 'unchanged'))
             return
-        if mode == 'install' and '# Multi-agent workflow' in (integrations.rd(str(path)) or '').replace(START, '') and START not in (integrations.rd(str(path)) or ''):
+        if status == 'added' and '# Multi-agent workflow' in (integrations.rd(str(path)) or ''):
             self.say("WARNING: " + str(path) + " already has a '# Multi-agent workflow' section outside the agentkit markers")
         if self.args.dry_run:
             self.say('[dry-run] ' + path.name + ': ' + status + ' agentkit block')
             return
-        if mode == 'install' and not self.ask('Insert the agentkit workflow block into ' + str(path) + '?'):
-            return
-        self.backup(path)
+        if ((mode == 'install' and not filtered)
+                or (mode in ('install', 'update') and status == 'added')):
+            if not self.confirm_setting('Insert the agentkit workflow block into ' + str(path) + '?'):
+                self.say('  ! ' + path.name + ': skipped')
+                self.rows.append((self.current, path.name, 'skipped'))
+                return
         args[-1] = 'write'
-        self.helper(args)
-        self.detail('  + ' + path.name + ': ' + ('removed agentkit block' if mode == 'uninstall' else status + ' block'))
+        if changes is None:
+            self.backup(path)
+            self.helper(args)
+        else:
+            staged = temporary / path.name
+            if path.exists():
+                staged.write_bytes(path.read_bytes())
+            args[1] = str(staged)
+            self.helper(args)
+            changes.set(path.resolve(), staged.read_bytes(), backup=path)
+        message = '  + ' + path.name + ': ' + ('removed agentkit block' if mode == 'uninstall' else status + ' block')
+        if mode == 'update' and status == 'added':
+            self.say(message)
+        else:
+            self.detail(message)
         self.rows.append((self.current, path.name, status))
 
-    def sources(self, temporary: Path, old: dict) -> tuple:
+    def sources(self, temporary: Path, old: dict, roles, preferences, filtered: bool) -> tuple:
         # Validate managed-tree boundaries before preparation can back up or
         # replace a foreign skill directory. --force never follows a parent.
         for category in ('agents', 'skills'):
@@ -267,13 +424,14 @@ class Lifecycle:
             if linked_parent(directory, self.target):
                 raise ValueError('refusing linked parent directory: ' + str(directory))
         files = {}
-        preferences = models.load_preferences(self.target)
         eligible = temporary / 'sources'
         rendered = temporary / 'rendered'
         eligible.mkdir()
         rendered.mkdir()
         for src in sorted((self.root / 'agents').glob('*.md')):
-            rel = 'agents/' + src.stem + ('.toml' if self.current == 'codex' else '.md')
+            if src.stem not in roles.active:
+                continue
+            rel = selection.agent_rel(src.stem, self.current)
             out = src
             if self.current == 'codex':
                 out = rendered / (src.stem + '.toml')
@@ -283,7 +441,8 @@ class Lifecycle:
                 except codex.Fail as exc:
                     raise ValueError('cannot render Codex agent ' + src.stem + ': ' + str(exc))
                 dest = self.target / rel
-                if dest.exists() and rel not in old and not self.args.force and (dest.is_symlink() or digest(dest) != digest(out)):
+                if ((dest.exists() or dest.is_symlink()) and rel not in old and not self.args.force
+                        and (dest.is_symlink() or not dest.is_file() or digest(dest) != digest(out))):
                     self.warn('Codex agent(s) ' + src.stem + ' not installed: ' + str(dest) + ' exists and is not managed by agentkit. Use --force to back it up and replace it.')
                     continue
                 shutil.copy2(src, eligible / src.name)
@@ -331,13 +490,19 @@ class Lifecycle:
             except codex.Fail as exc:
                 if exc.code != 3:
                     if 'agentkit markers' in str(exc):
+                        if filtered:
+                            raise ValueError('cannot update ' + str(self.target / 'config.toml') + ': ' + str(exc)) from exc
                         self.warn('cannot use ' + str(self.target / 'config.toml') + ': ' + str(exc))
                         self.say('config.toml: no agents registered')
                         return files, None
                     raise
                 conflicts = str(exc).split('markers: ', 1)[-1].split()
                 for name in conflicts:
-                    files.pop('agents/' + name + '.toml', None)
+                    rel = selection.agent_rel(name, 'codex')
+                    if rel in old:
+                        files[rel] = None
+                    else:
+                        files.pop(rel, None)
                     (eligible / (name + '.md')).unlink(missing_ok=True)
                 self.warn('config.toml already defines agent(s) outside the agentkit markers: ' + ' '.join(conflicts) + '. Those are skipped.')
                 if list(eligible.glob('*.md')):
@@ -346,11 +511,26 @@ class Lifecycle:
                     block = None
         return files, block
 
-    def sync(self, mode: str) -> None:
+    def sync(self, mode: str, model_choices=None) -> None:
         manifest = self.target / 'agentkit/manifest.json'
+        if self.current in self.selection_manifest and models.snapshot(manifest, self.target) != self.selection_manifest[self.current]:
+            raise ValueError('agent manifest changed while selecting roles; rerun agentkit install')
+        previous_manifest = read_manifest(manifest)
         old = load_manifest(manifest)
+        roles = self.roles(self.current)
+        families = selection.load_families(self.root, selection.load_rules(self.root))
+        filtered = bool(roles.excluded or selection.saved(previous_manifest))
+        excluded = set(self.catalog_roles()) - roles.active
+        excluded_paths = {selection.agent_rel(role, self.current) for role in excluded}
+        required_exclusions = roles.excluded & roles.active
+        required_paths = {selection.agent_rel(role, self.current) for role in required_exclusions}
+        preferences = models.load_preferences(self.target)
+        if model_choices is not None:
+            preferences = models.install_choices(self, model_choices, preferences)
+        changes = FileChanges(self.backup)
         new = {}
-        added = updated = same = forced = removed = 0
+        installed_roles = set()
+        added = updated = same = forced = removed = deselected = 0
         file_rows = []
 
         def file_detail(rel, status, plain):
@@ -360,8 +540,16 @@ class Lifecycle:
                 self.say(plain)
 
         self.detail('agentkit ' + self.version + ': installing into ' + str(self.target))
+        if mode == 'update':
+            for role in sorted(required_exclusions):
+                message = f'{self.current}/{role}: selected ({roles.locks[role]}); saved exclusion retained'
+                if self.args.quiet:
+                    self.warn(message)
+                else:
+                    self.say(message)
         with tempfile.TemporaryDirectory(prefix='agentkit-render-') as work:
-            files, block = self.sources(Path(work), old)
+            temporary = Path(work)
+            files, block = self.sources(temporary, old, roles, preferences, filtered)
             for rel, src in files.items():
                 dest = self.target / rel
                 if linked_parent(dest.parent, self.target):
@@ -379,14 +567,14 @@ class Lifecycle:
                     if previous:
                         new[rel] = previous
                     continue
-                if not exists and previous and mode == 'update':
+                if not exists and previous and mode == 'update' and rel not in required_paths:
                     new[rel] = previous
                     file_detail(rel, 'Kept removed', 'kept removed: ' + rel)
                     continue
                 if exists and (current_hash != sha or replace_link):
                     if previous and current_hash != previous and not self.args.force:
                         if not self.args.dry_run:
-                            atomic_write(Path(str(dest) + '.agentkit-new'), src.read_bytes())
+                            changes.set(Path(str(dest) + '.agentkit-new'), src.read_bytes())
                         new[rel] = previous
                         suffix = rel + '.agentkit-new'
                         action = 'Would save new version to ' if self.args.dry_run else 'New version in '
@@ -396,7 +584,8 @@ class Lifecycle:
                     if not previous and not self.args.force:
                         self.warn(rel + ' exists and is not managed by agentkit; skipped (use --force to replace, with backup)')
                         continue
-                    self.backup(dest)
+                    if self.args.dry_run:
+                        self.backup(dest)
                 action = None
                 if not exists:
                     added += 1
@@ -413,22 +602,41 @@ class Lifecycle:
                     label = ' (' + action + ')' if action != 'added' else ''
                     self.detail('  + ' + rel + label)
                 if not self.args.dry_run:
-                    if dest.is_symlink():
-                        dest.unlink()
                     if action:
-                        atomic_write(dest, src.read_bytes())
+                        changes.set(dest, src.read_bytes(), backup=dest if exists else None)
                         if self.terminal.rich and mode != 'update':
                             file_rows.append((rel, action))
                 else:
                     file_detail(rel, 'Would copy', '[dry-run] copy ' + rel)
                 new[rel] = sha
+                if rel.startswith('agents/'):
+                    installed_roles.add(Path(rel).stem)
+            for rel in sorted(excluded_paths):
+                dest = self.target / rel
+                sha = old.get(rel)
+                status = selection.removal_status(dest, self.target, sha)
+                previewed = self.previewed_removals.get(self.current)
+                if status == 'owned' and previewed is not None and rel not in previewed:
+                    raise ValueError('excluded agent changed after selection preview: ' + str(dest))
+                if status == 'owned':
+                    if self.args.dry_run:
+                        self.backup(dest)
+                        file_detail(rel, 'Would remove (excluded)', '[dry-run] remove ' + rel + ' (excluded)')
+                    else:
+                        changes.set(dest, None, backup=dest, expected_hash=sha)
+                        file_detail(rel, 'Removed (excluded)', '  - ' + rel + ' (excluded; backed up)')
+                    deselected += 1
+                elif status != 'missing':
+                    if sha:
+                        new[rel] = sha
+                    self.warn(f'{rel}: excluded from agentkit; kept {status} file')
             for rel, sha in old.items():
-                if rel in files:
+                if rel in files or rel in excluded_paths:
                     continue
                 dest = self.target / rel
                 if dest.is_file() and not linked_parent(dest, self.target) and digest(dest) == sha:
                     if not self.args.dry_run:
-                        dest.unlink()
+                        changes.set(dest, None, expected_hash=sha)
                     removed += 1
                     if mode != 'update' or self.args.dry_run:
                         action = 'Would remove' if self.args.dry_run else 'Removed'
@@ -437,36 +645,70 @@ class Lifecycle:
                     file_detail(rel, 'Kept edit (removed upstream)', 'kept ' + rel + ' (removed upstream, but you edited it)')
             if file_rows:
                 self.terminal.table(('File', 'Status'), file_rows, self.say, status_column=1)
-            self.say(('  + ' if added + updated + forced + removed else '  = ') + f'Files: {added} added, {updated} updated, {same} unchanged, {forced} replaced (--force), {removed} removed upstream')
+            summary = f'Files: {added} added, {updated} updated, {same} unchanged, {forced} replaced (--force), {removed} removed upstream'
+            if deselected:
+                summary += f', {deselected} excluded'
+            self.say(('  + ' if added + updated + forced + removed + deselected else '  = ') + summary)
             self.rows.append((self.current, 'files', f'{added} added, {updated} updated, {same} unchanged'))
-            if not self.args.dry_run:
-                atomic_write(manifest, (json.dumps({'agentkit_version': self.version, 'files': dict(sorted(new.items()))}, indent=2) + '\n').encode())
             if block:
                 if self.total_steps:
                     self.step += 1
                     label = self.terminal.target_label('Codex')
                     self.say(f'[{self.step}/{self.total_steps}] {label}: config.toml')
                 cfg = self.target / 'config.toml'
-                if mode != 'update' or codex.region((codex.rd(str(cfg)) or '').splitlines()):
-                    status = io.StringIO()
-                    with contextlib.redirect_stdout(status):
-                        codex.config_put(str(cfg), str(block), 'check')
-                    if status.getvalue().strip() == 'unchanged':
-                        self.detail('  = config.toml: block already up to date')
-                        self.rows.append((self.current, 'config.toml', 'unchanged'))
-                    if status.getvalue().strip() != 'unchanged':
-                        if self.args.dry_run:
-                            self.say('[dry-run] config.toml: ' + status.getvalue().strip() + ' agentkit block')
-                        elif mode == 'update' or self.ask('Register the agentkit agents in ' + str(cfg) + '?'):
-                            self.backup(cfg)
-                            with contextlib.redirect_stdout(io.StringIO()):
-                                codex.config_put(str(cfg), str(block), 'write')
-                            self.rows.append((self.current, 'config.toml', status.getvalue().strip()))
-                        else:
-                            self.say('  ! config.toml: skipped')
-                            self.rows.append((self.current, 'config.toml', 'skipped'))
-                            self.warn('the agent files in ' + str(self.target / 'agents') + ' are not registered in config.toml; codex doctor will warn about them')
-            self.workflow(mode)
+                result = io.StringIO()
+                with contextlib.redirect_stdout(result):
+                    codex.config_put(str(cfg), str(block), 'check')
+                status = result.getvalue().strip()
+                if status == 'unchanged':
+                    self.detail('  = config.toml: block already up to date')
+                elif self.args.dry_run:
+                    self.say('[dry-run] config.toml: ' + status + ' agentkit block')
+                    status = 'would add' if status == 'added' else 'would replace'
+                elif ((status == 'replaced' and (mode == 'update' or filtered))
+                      or self.confirm_setting('Register the agentkit agents in ' + str(cfg) + '?')):
+                    staged = temporary / 'config.toml'
+                    if cfg.exists():
+                        staged.write_bytes(cfg.read_bytes())
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        codex.config_put(str(staged), str(block), 'write')
+                    changes.set(cfg.resolve(), staged.read_bytes(), backup=cfg)
+                    if status == 'added':
+                        self.say('  + config.toml: added agentkit block')
+                else:
+                    status = 'skipped'
+                    self.say('  ! config.toml: skipped')
+                    self.warn('the agent files in ' + str(self.target / 'agents') + ' are not registered in config.toml; codex doctor will warn about them')
+                if status == 'skipped':
+                    registered = codex.managed_registrations(codex.rd(str(cfg)) or '', str(self.target / 'agents'))
+                else:
+                    registered = set(codex.block_names(block.read_text(encoding='utf-8')))
+                installed_roles &= registered
+                self.rows.append((self.current, 'config.toml', status))
+            elif self.current == 'codex' and filtered:
+                cfg = self.target / 'config.toml'
+                if codex.region((codex.rd(str(cfg)) or '').splitlines()):
+                    if self.args.dry_run:
+                        self.say('[dry-run] config.toml: remove empty agentkit block')
+                    else:
+                        staged = temporary / 'config.toml'
+                        staged.write_bytes(cfg.read_bytes())
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            codex.config_del(str(staged), 'write')
+                        changes.set(cfg.resolve(), staged.read_bytes(), backup=cfg)
+            if self.current == 'codex' and not block:
+                installed_roles.clear()
+            self.workflow(mode, temporary, changes, installed_roles, filtered, families=families)
+            if not self.args.dry_run:
+                if model_choices is not None:
+                    path = self.target / models.PREFERENCES
+                    changes.set(path, models.preference_bytes(preferences), backup=path)
+                previous_manifest.update(agentkit_version=self.version, files=dict(sorted(new.items())))
+                if roles.excluded or selection.FIELD in previous_manifest:
+                    previous_manifest[selection.FIELD] = sorted(roles.excluded)
+                    previous_manifest[selection.FAMILY_VERSION_FIELD] = selection.FAMILY_VERSION
+                changes.set(manifest, (json.dumps(previous_manifest, indent=2) + '\n').encode())
+                changes.commit()
 
     def uninstall(self) -> None:
         if not self.args.dry_run and not self.ask('Remove agentkit files, hooks and the instruction blocks (CLAUDE.md, AGENTS.md, config.toml) for: ' + ' '.join(self.targets()) + '?'):
@@ -612,12 +854,16 @@ class Lifecycle:
                 show_checks()
                 continue
             installed_files = load_manifest(manifest)
-            installed_version = json.loads(manifest.read_text(encoding='utf-8')).get('agentkit_version', '')
+            installed_version = read_manifest(manifest).get('agentkit_version', '')
+            roles = self.roles(target)
+            excluded_paths = {selection.agent_rel(role, target) for role in set(self.catalog_roles()) - roles.active}
             if installed_version == self.version:
                 check('ok', 'installed version ' + installed_version)
             else:
                 check('warn', 'installed version ' + str(installed_version) + ', repo version ' + self.version + ' (run: agentkit update)')
             for rel, sha in installed_files.items():
+                if rel in excluded_paths:
+                    continue
                 path = self.target / rel
                 if not path.is_file():
                     check('FAIL', 'agent ' + Path(rel).stem + ': missing', 'FAIL ')
@@ -627,7 +873,10 @@ class Lifecycle:
                 elif rel.startswith('agents/'):
                     check('ok', 'agent ' + Path(rel).stem)
             for source in sorted((self.root / 'agents').glob('*.md')):
-                rel = 'agents/' + source.stem + ('.toml' if target == 'codex' else '.md')
+                if source.stem not in roles.active:
+                    check('skipped', 'agent ' + source.stem + ': excluded by selection', '  skipped ')
+                    continue
+                rel = selection.agent_rel(source.stem, target)
                 if rel not in installed_files:
                     if (self.target / rel).exists():
                         check('warn', 'agent ' + source.stem + ': not managed by agentkit')
@@ -723,9 +972,10 @@ class Lifecycle:
             if self.terminal.color:
                 self.say(self.terminal.paint('( o.o )', '36'))
             self.requirements()
+            self.select_roles()
             model_batch = models.configure(self, installing=True)
             self.desktop_installations()
-            models.commit(self, model_batch)
+            model_targets = {target for target, _ in model_batch[2]} if model_batch else set()
             if self.args.dry_run:
                 self.say('(dry run: nothing is written)')
             self.total_steps = sum(1 + int('claude-md' not in self.args.skip) + int(target == 'codex' or 'hooks' not in self.args.skip) for target in self.targets())
@@ -734,7 +984,7 @@ class Lifecycle:
                 self.step += 1
                 label = self.terminal.target_label(target.capitalize())
                 self.say(f'[{self.step}/{self.total_steps}] {label}: agents and skills')
-                self.sync('install')
+                self.sync('install', model_batch if target in model_targets else None)
                 if target == 'claude':
                     self.posix_integration('install')
             try:

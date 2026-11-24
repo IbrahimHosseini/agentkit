@@ -1,0 +1,10 @@
+{
+  "families": {
+    "design": ["design-ux-research", "design-ux-architecture"],
+    "seo": ["seo-aeo-foundations", "seo-agentic-search", "seo-ai-citations"],
+    "marketing": ["marketing-aso", "marketing-dev-community", "marketing-email", "marketing-instagram", "marketing-linkedin", "marketing-publishing", "marketing-reddit", "marketing-tiktok", "marketing-x-engagement", "marketing-x-research"],
+    "product": ["product-trends", "product-behavior", "product-experiments"],
+    "security": ["security-ai-code", "security-architecture", "security-compliance", "security-appsec", "security-credentials", "security-threat-intel", "security-detection"],
+    "tester": ["test-accessibility", "test-api", "test-performance", "test-e2e"]
+  }
+}

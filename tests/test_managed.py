@@ -43,6 +43,27 @@ class ManagedFilesTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b'original\r\n')
         self.assertEqual(list(self.root.iterdir()), [path])
 
+    def test_install_write_failure_restores_removed_agent_and_workflow(self):
+        agent, workflow, manifest = (self.root / name for name in ('writing.toml', 'AGENTS.md', 'manifest.json'))
+        for path in (agent, workflow, manifest):
+            path.write_bytes(b'original')
+        changes = managed.FileChanges(mock.Mock())
+        changes.set(agent, None, expected_hash=managed.digest(agent))
+        changes.set(workflow, b'filtered')
+        changes.set(manifest, b'filtered')
+        write = managed.atomic_write
+
+        def fail_manifest(path, data):
+            if path == manifest and data == b'filtered':
+                raise PermissionError('cannot save manifest')
+            write(path, data)
+
+        with mock.patch.object(managed, 'atomic_write', side_effect=fail_manifest):
+            with self.assertRaisesRegex(PermissionError, 'cannot save manifest'):
+                changes.commit()
+        for path in (agent, workflow, manifest):
+            self.assertEqual(path.read_bytes(), b'original')
+
     @unittest.skipUnless(os.name == 'nt', 'requires native Windows read-only file semantics')
     def test_actual_windows_read_only_target_preserves_original_and_cleans_temp(self):
         path = self.root / 'read-only.toml'

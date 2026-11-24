@@ -9,8 +9,8 @@ Shared agents and skills for Claude Code and Codex. A Python 3.9+ core runs the 
 - `bin/agentkit`, `install.sh`: POSIX launcher and bootstrap. `lib/legacy-cli.sh`: POSIX ancillary commands.
 - `bin/agentkit.cmd`, `install.ps1`: native Windows launcher and bootstrap.
 - `lib/ui.sh`, `lib/requirements.sh`, `lib/codex.py`: terminal UI, requirements check, Codex converter.
-- `codex/`: `models.map`, `karpathy-guidelines.md`. `templates/AGENTS.md.snippet`: workflow block for Codex.
-- `agents/*.md`: agent sources. `tests/run.sh`, `scripts/validate.sh`: checks.
+- `codex/`: `models.map`, `karpathy-guidelines.md`. `templates/AGENTS.md.snippet` and `templates/CLAUDE.md.snippet`: installed host workflows.
+- `agents/*.md`: agent sources. `agents/routing.json`: family assignments. `agents/selection.json`: required roles and install dependencies. `tests/run.sh`, `scripts/validate.sh`: checks.
 
 ## Rules
 - Keep shell code compatible with Bash 3.2. No associative arrays or `mapfile`.

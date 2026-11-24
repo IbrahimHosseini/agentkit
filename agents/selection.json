@@ -1,0 +1,9 @@
+{
+  "required": ["supervisor-plan", "supervisor-review"],
+  "dependencies": {
+    "backend": ["database", "security", "tester"],
+    "devops": ["security"],
+    "frontend": ["design", "tester"],
+    "mobile": ["design", "tester"]
+  }
+}

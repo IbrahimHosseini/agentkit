@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-24
+
+### Added
+
+- Expand the catalog to 50 roles, with 29 specialists across design, SEO, marketing, product, security, and testing. Add a product parent and standalone architecture, payments, and workflow optimization roles.
+- Select roles during installation for each host. Toggle a family together or deselect specialists individually. The repeatable `--skip-agent` option supports unattended installs. Updates retain exclusions and model choices, and managed removal backs up unchanged files.
+- Route approved assignments from a family parent to an eligible specialist. The main session can launch the selected role and return its evidence when the parent cannot enforce the installed role settings and assignment limits. Review fixes go through the same parent and specialist.
+
+### Changed
+
+- Expand existing engineering, design, documentation, marketing, product planning, research, security, and testing guidance. Each role includes memory guidance and practices for recording verified findings.
+
 ## [0.8.0] - 2026-11-22
 
 ### Added
@@ -144,7 +156,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.5.0...v0.6.0

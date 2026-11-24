@@ -84,8 +84,48 @@ then :; else fail "shared Python core syntax"; fi
 
 # Codex support: python helper, data files, and the requirements block embedded in install.sh.
 if PYTHONDONTWRITEBYTECODE=1 python3 -I -m py_compile lib/codex.py; then pass "py_compile lib/codex.py"; else fail "py_compile lib/codex.py"; fi
+if python3 -I -B - <<'PYROLES'
+import sys
+from pathlib import Path
+
+root = Path.cwd()
+sys.path.insert(0, str(root / 'lib'))
+from agentkit_core import selection
+
+names = {path.stem for path in (root / 'agents').glob('*.md')}
+rules = selection.load_rules(root)
+selection.resolve(names, (), rules)
+if set(rules[1]) - names:
+    raise ValueError('role rules refer to a role missing from the catalog')
+PYROLES
+then pass "agent selection rules"; else fail "agent selection rules"; fi
+if python3 -I -B - <<'PYROUTING'
+import re
+import sys
+from pathlib import Path
+
+root = Path.cwd()
+sys.path.insert(0, str(root / 'lib'))
+import codex
+from agentkit_core import selection
+
+sources = {path.stem: path for path in (root / 'agents').glob('*.md')}
+families = selection.load_families(root, selection.load_rules(root))
+missing = {'architect', 'payments', 'workflow-optimizer'} - sources.keys()
+if missing:
+    raise ValueError('standalone roles missing from the catalog: ' + ', '.join(sorted(missing)))
+for name, path in sources.items():
+    fields, _ = codex.parse_md(path.read_text(encoding='utf-8'), str(path))
+    grants = re.findall(r'(?:^|,)\s*(?:Agent|Task)\b(?:\(([^()]*)\))?', fields['tools'])
+    if name in families:
+        if len(grants) != 1 or {role.strip() for role in grants[0].split(',')} != set(families[name]):
+            raise ValueError(f'{name}: delegation tools must list exactly its family members')
+    elif grants:
+        raise ValueError(f'{name}: only family parents may have a delegation tool')
+PYROUTING
+then pass "agent family routing"; else fail "agent family routing"; fi
 find . -name __pycache__ -path './lib/*' -prune -exec rm -rf {} + 2> /dev/null
-for f in codex/models.map codex/karpathy-guidelines.md templates/AGENTS.md.snippet; do
+for f in codex/models.map codex/karpathy-guidelines.md templates/AGENTS.md.snippet templates/CLAUDE.md.snippet; do
   if [ -s "$f" ]; then pass "exists $f"; else fail "missing or empty $f"; fi
 done
 blk() { sed -n '/^# >>> agentkit:requirements$/,/^# <<< agentkit:requirements$/p' "$1"; }

@@ -593,6 +593,19 @@ for line in sys.stdin:
             # Back to a Claude model restores the original tools and body.
             self.assertEqual(models.patch_agent(again, 'claude', {'model': 'sonnet', 'effort': None}), base)
 
+    def test_claude_relay_round_trip_preserves_body_spacing(self):
+        for newline in ('\n', '\r\n'):
+            for blank_lines in (0, 1, 3):
+                with self.subTest(newline=newline, blank_lines=blank_lines):
+                    header = newline.join(('---', 'name: sample', 'description: A test agent',
+                                           'tools: Read', 'model: sonnet', '---', ''))
+                    body = newline * blank_lines + '# Keep this heading' + newline
+                    original = (header + body).encode('utf-8')
+                    updated = original
+                    for model in ('gpt-6.1-sol', 'gpt-6-luna', 'sonnet'):
+                        updated = models.patch_agent(updated, 'claude', {'model': model, 'effort': None})
+                    self.assertEqual(updated, original)
+
     def test_legacy_openai_model_without_relay_is_repaired(self):
         legacy = (ROOT / 'agents/backend.md').read_text(encoding='utf-8').replace('model: sonnet', 'model: gpt-6.2-sol').encode()
         choice = models.read_choice(legacy, 'claude')
