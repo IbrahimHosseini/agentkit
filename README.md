@@ -234,7 +234,7 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 
 `--target` sets which CLI gets the install.
 
-- Without `--target`, `install` selects Claude, Codex, or both from the desktop apps and CLIs it finds. Each selected target requires its CLI.
+- Without `--target`, interactive installation opens a Providers checklist with detected providers already selected. Choose Claude, Codex, or both. Each selected provider requires its CLI. Installations with `--yes` or without a terminal use the detected providers.
 - `update`, `uninstall` and `doctor` use every target that is already installed. Interactive `models` asks which installed target to configure first.
 - With `--target claude`, files go to `~/.claude` (or `CLAUDE_CONFIG_DIR`).
 - With `--target codex`, files go to `~/.codex` (or `CODEX_HOME`).
@@ -244,9 +244,9 @@ curl -fsSL https://raw.githubusercontent.com/IbrahimHosseini/agentkit/main/insta
 
 ### Choose which agents to install
 
-In an interactive `agentkit install`, review the numbered agent list before choosing models. A fresh install starts with every agent selected. Toggle the roles you want to change and review the summary before applying your selection. The installer shows why an agent is locked.
+In the Providers and Agents checklists, use Up and Down to move, Space to toggle, Enter to confirm, and Esc to cancel. The Agents checklist shows standalone agents and one row per family. Space on a family toggles its specialists together. A fresh install starts with every role selected. Set `NO_COLOR=1` to turn off terminal colors.
 
-`supervisor-plan` and `supervisor-review` are required for every installation. Selecting any role in the following table also selects and locks its dependencies.
+`supervisor-plan` and `supervisor-review` are required for every installation. Selecting any role in the following table also selects and locks its dependencies. A locked parent stays selected when you toggle its specialists.
 
 | Selected agent | Required agents |
 |---|---|
@@ -444,7 +444,7 @@ After the main session approves a parent's assignment, the parent can handle the
 | `security` | `security-ai-code`, `security-architecture`, `security-compliance`, `security-appsec`, `security-credentials`, `security-threat-intel`, `security-detection` |
 | `tester` | `test-accessibility`, `test-api`, `test-performance`, `test-e2e` |
 
-In the interactive installer, explicitly enabling a parent initially enables its listed specialists. You can then deselect specialists individually. When another role brings in the parent as a dependency, specialist choices stay as selected. The required roles and automatic install dependencies are listed in [selection.json](agents/selection.json).
+The interactive installer toggles specialists as a family. A family with saved individual exclusions appears partially selected. Use `--skip-agent` to exclude a specific specialist in a scripted install. When another role brings in the parent as a dependency, specialist choices stay as selected. The required roles and automatic install dependencies are listed in [selection.json](agents/selection.json).
 
 A child assignment names both roles, the objective, permitted files and tools, inherited permissions, and acceptance checks. Each permission must be allowed by the parent assignment and the child role. A parent or specialist can also take a self-contained direct assignment with an explicit objective, permitted files and tools, and acceptance checks. Specialists complete assignments themselves. Design requires the user's approved option, security stays defensive, static, and read-only, and test children edit only assigned test files and use local fakes. X research stays read-only. Sending or publishing requires explicit consent for the destination channel and account, content, and action.
 
@@ -488,12 +488,13 @@ Codex launches must use the installed role's model and instructions from `${CODE
 agentkit update
 ```
 
-This runs `git pull --ff-only` in `~/.agentkit`. Then it syncs the files.
+This fetches and fast-forwards `main` in `~/.agentkit`, then applies the update with the fetched version of Agentkit.
 
 - A file you did not edit is updated.
 - A file you edited is kept. The new version is written next to it as `<file>.agentkit-new`. Compare the two and merge by hand.
 - A file you deleted stays deleted across updates.
 - Hook entries that agentkit marked are refreshed when their path changed.
+- The managed workflow block in `CLAUDE.md` or `AGENTS.md` is refreshed for each updated provider. Personal content outside the block is preserved. To add a missing block, confirm the prompt or pass `--yes`.
 - A file removed upstream is removed, if you did not edit it.
 - Agents you excluded stay excluded. If an update makes an excluded agent a dependency of an enabled role, agentkit installs it and explains which role needs it.
 - `agentkit update --force` replaces your edited files, after a backup.

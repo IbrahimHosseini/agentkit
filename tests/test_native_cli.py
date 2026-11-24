@@ -95,6 +95,29 @@ class NativeLifecycleTests(unittest.TestCase):
     def install(self, target='codex', *args):
         return self.cli('install', '--target', target, '--yes', '--skip', 'gstack', '--skip', 'karpathy', *args)
 
+    def test_update_applies_fetched_workflow_code_to_both_targets_once(self):
+        self.install('both')
+        for template in ('AGENTS.md', 'CLAUDE.md'):
+            target = (self.codex if template == 'AGENTS.md' else self.claude) / template
+            target.write_bytes(b'Personal heading\r\n\r\n' + target.read_bytes())
+        publisher = self.scratch / 'update-publisher'
+        self.git_run('clone', '-q', str(self.origin), str(publisher))
+        runtime = publisher / 'lib/agentkit_core/cli.py'
+        runtime.write_bytes(runtime.read_bytes().replace(b'Installed candidates for', b'New roster for'))
+        self.git_run('add', '--', 'lib/agentkit_core/cli.py', cwd=publisher)
+        self.git_run('commit', '-qm', 'change the runtime workflow renderer', cwd=publisher)
+        self.git_run('push', '-q', 'origin', 'HEAD:main', cwd=publisher)
+
+        log = self.cli('update', '--target', 'both', '--yes').stdout
+        self.assertEqual(log.count('Downloading updates from origin/main'), 1)
+        for target in (self.codex / 'AGENTS.md', self.claude / 'CLAUDE.md'):
+            content = target.read_bytes()
+            self.assertTrue(content.startswith(b'Personal heading\r\n\r\n'))
+            self.assertIn(b'New roster for `tester`', content)
+            self.assertNotIn(b'<!-- agentkit:family-roster -->', content)
+            self.assertIn(f'{target.name}: replaced block', log)
+        self.assertIn('AGENTS.md: block already up to date', self.cli('update', '--target', 'both').stdout)
+
     def publish_agent_change(self):
         publisher = self.scratch / 'publisher'
         self.git_run('clone', '-q', str(self.origin), str(publisher))
