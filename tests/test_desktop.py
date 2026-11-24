@@ -47,6 +47,19 @@ class DesktopTests(unittest.TestCase):
         self.bundle('ChatGPT', 'com.openai.codex')
         self.assertEqual(desktop.mac_apps(self.home)['codex'].name, 'ChatGPT')
 
+    def test_mac_discovery_continues_past_invalid_bundle_metadata(self):
+        bad = self.bundle('Broken', 'com.openai.codex') / 'Contents/Info.plist'
+        claude = self.bundle('Claude', 'com.anthropic.claudefordesktop')
+        invalid_plists = (
+            b'<?xml version="1.0"?><plist><dict>\x00</dict></plist>',
+            plistlib.dumps(['not a bundle dictionary']),
+            plistlib.dumps({'CFBundleIdentifier': 'com.openai.codex', 'CFBundleExecutable': 1}),
+        )
+        for contents in invalid_plists:
+            with self.subTest(contents=contents):
+                bad.write_bytes(contents)
+                self.assertEqual(desktop.mac_apps(self.home), {'claude': desktop.App('Claude', str(claude))})
+
     def test_mac_system_and_user_roots_default(self):
         calls = []
         def record(root, pattern):

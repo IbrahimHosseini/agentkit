@@ -21,6 +21,7 @@ import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional
+from xml.parsers.expat import ExpatError
 
 from . import platforms
 
@@ -41,11 +42,15 @@ def mac_apps(home: Path) -> Dict[str, App]:
         for bundle in root.glob('*.app'):
             try:
                 info = plistlib.loads((bundle / 'Contents/Info.plist').read_bytes())
+                if not isinstance(info, dict):
+                    continue
+                executable = info.get('CFBundleExecutable')
+                if not isinstance(executable, str) or not executable:
+                    continue
                 for target, identity in BUNDLE_IDS.items():
-                    executable = info.get('CFBundleExecutable', '')
-                    if info.get('CFBundleIdentifier') == identity and executable and (bundle / 'Contents/MacOS' / executable).is_file():
+                    if info.get('CFBundleIdentifier') == identity and (bundle / 'Contents/MacOS' / executable).is_file():
                         found.setdefault(target, App(bundle.stem, str(bundle)))
-            except (OSError, ValueError, plistlib.InvalidFileException):
+            except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
                 continue
     return found
 
