@@ -27,6 +27,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--target', choices=['claude', 'codex', 'both'])
     p.add_argument('--project', type=Path)
     p.add_argument('--agent', help='Configure one agent (models command only)')
+    p.add_argument('--apply-fetched-update', help=argparse.SUPPRESS)
     p.add_argument('--skip-agent', action='append', default=[],
                    help='Replace saved exclusions during install. Repeat to exclude multiple roles. '
                         'Excluding an optional family parent also excludes its children. '
@@ -40,9 +41,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 class Lifecycle:
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, argv=()):
         self.args = args
+        self.argv = argv
         self.terminal = ui.Terminal(quiet=args.quiet)
+        if args.apply_fetched_update and (args.command != 'update' or args.dry_run):
+            raise ValueError('--apply-fetched-update requires a real update')
         if args.agent and args.command != 'models':
             raise ValueError('--agent is supported only by agentkit models')
         if args.skip_agent and args.command != 'install':
@@ -97,7 +101,8 @@ class Lifecycle:
                     atomic_write(home / 'agentkit/update-status', b'agentkit: auto-update failed, see update.log\n')
 
     def warn(self, text: str) -> None:
-        print('warning: ' + text, file=sys.stderr)
+        warning = 'warning: ' + text
+        print(self.terminal.status(warning, 'warn') if sys.stderr.isatty() else warning, file=sys.stderr)
 
     def ask(self, text: str) -> bool:
         if self.args.yes:
@@ -180,6 +185,10 @@ class Lifecycle:
         if applications:
             self.terminal.table(('Target', 'Application', 'Result'), applications, self.say,
                                 target_column=0, group_by=0)
+        if not (self.args.target or self.args.project or self.args.yes):
+            with desktop.terminal() as stream:
+                if stream is not None:
+                    self.pick_targets(stream)
         if not self.install_targets:
             raise ValueError('requirements are not met: no Claude or Codex installation detected; choose --target claude or --target codex to set up a provider')
         if self.args.target or self.args.project or len(self.install_targets) == 1:
@@ -197,6 +206,25 @@ class Lifecycle:
         if not ready:
             raise ValueError('requirements are not met: no detected Claude or Codex CLI is ready')
         self.install_targets = ready
+
+    def pick_targets(self, stream) -> None:
+        options = tuple(self.homes)
+        selected = set(self.install_targets)
+        detected = set(selected)
+
+        def rows():
+            return [ui.ChoiceRow(target.capitalize(), 'x' if target in selected else ' ',
+                                 'detected' if target in detected else 'CLI setup required', target)
+                    for target in options]
+
+        def toggle(index):
+            selected.symmetric_difference_update((options[index],))
+
+        with desktop.menu_keys(stream) as read_key:
+            if not self.terminal.checklist('Providers', read_key, rows, toggle,
+                                           lambda: '' if selected else 'Select at least one provider.'):
+                raise ValueError('provider selection cancelled')
+        self.install_targets = [target for target in options if target in selected]
 
     def refresh_install_path(self) -> None:
         if platforms.is_windows():
@@ -319,24 +347,23 @@ class Lifecycle:
                     return bool(removals)
 
                 if stream is not None and explicit is None:
-                    choice = selection.choose(target, names, choice, rules,
-                                              lambda prompt: desktop.read_answer(stream, prompt), print, preview,
-                                              families=families)
-                else:
-                    say = print if stream is not None else self.say
-                    say(f'Agent selection for {target.capitalize()}')
-                    selection.summary(names, choice, say)
-                    removals = preview(choice, say)
-                    if removals and not (self.args.yes or self.args.dry_run):
-                        if stream is None:
-                            raise ValueError('confirm the shown agent removals in a terminal or rerun with --yes')
-                        prompt = f'Apply the selected exclusions and remove the listed {target.capitalize()} agent files? [y/N] '
-                        try:
-                            answer = desktop.read_answer(stream, prompt).strip().lower()
-                        except EOFError:
-                            raise ValueError('agent selection cancelled (input ended)') from None
-                        if answer not in ('y', 'yes'):
-                            raise ValueError('agent selection cancelled')
+                    with desktop.menu_keys(stream) as read_key:
+                        choice = selection.choose(target, names, choice, rules, self.terminal,
+                                                  read_key, families=families)
+                say = print if stream is not None else self.say
+                say(self.terminal.target_label(f'Agent selection for {target.capitalize()}', target))
+                selection.summary(names, choice, say, families=families)
+                removals = preview(choice, say)
+                if removals and not (self.args.yes or self.args.dry_run):
+                    if stream is None:
+                        raise ValueError('confirm the shown agent removals in a terminal or rerun with --yes')
+                    prompt = f'Apply the selected exclusions and remove the listed {target.capitalize()} agent files? [y/N] '
+                    try:
+                        answer = desktop.read_answer(stream, prompt).strip().lower()
+                    except EOFError:
+                        raise ValueError('agent selection cancelled (input ended)') from None
+                    if answer not in ('y', 'yes'):
+                        raise ValueError('agent selection cancelled')
                 self.role_choices[target] = choice
 
     def workflow(self, mode: str, temporary=None, changes=None, roles=None, filtered=False, *,
@@ -345,6 +372,8 @@ class Lifecycle:
         if 'claude-md' in self.args.skip:
             if filtered and START in (integrations.rd(str(path)) or ''):
                 self.warn(f'{path.name} was skipped and may still list excluded roles')
+            elif mode == 'update':
+                self.say(self.terminal.status(f'  ! {path.name}: skipped (--skip claude-md)', 'skipped'))
             return
         if mode != 'uninstall' and self.total_steps:
             self.step += 1
@@ -382,7 +411,7 @@ class Lifecycle:
         status = self.helper(args)
         if status in ('none', 'unchanged'):
             if status == 'unchanged':
-                self.detail('  = ' + path.name + ': block already up to date')
+                self.say(self.terminal.status('  = ' + path.name + ': block already up to date', 'unchanged'))
                 self.rows.append((self.current, path.name, 'unchanged'))
             return
         if status == 'added' and '# Multi-agent workflow' in (integrations.rd(str(path)) or ''):
@@ -393,7 +422,8 @@ class Lifecycle:
         if ((mode == 'install' and not filtered)
                 or (mode in ('install', 'update') and status == 'added')):
             if not self.confirm_setting('Insert the agentkit workflow block into ' + str(path) + '?'):
-                self.say('  ! ' + path.name + ': skipped')
+                reason = 'adding the managed block requires confirmation' if mode == 'update' else 'confirmation not granted'
+                self.say(self.terminal.status(f'  ! {path.name}: skipped ({reason})', 'skipped'))
                 self.rows.append((self.current, path.name, 'skipped'))
                 return
         args[-1] = 'write'
@@ -407,8 +437,8 @@ class Lifecycle:
             args[1] = str(staged)
             self.helper(args)
             changes.set(path.resolve(), staged.read_bytes(), backup=path)
-        message = '  + ' + path.name + ': ' + ('removed agentkit block' if mode == 'uninstall' else status + ' block')
-        if mode == 'update' and status == 'added':
+        message = self.terminal.status('  + ' + path.name + ': ' + ('removed agentkit block' if mode == 'uninstall' else status + ' block'), status)
+        if mode == 'update':
             self.say(message)
         else:
             self.detail(message)
@@ -648,7 +678,9 @@ class Lifecycle:
             summary = f'Files: {added} added, {updated} updated, {same} unchanged, {forced} replaced (--force), {removed} removed upstream'
             if deselected:
                 summary += f', {deselected} excluded'
-            self.say(('  + ' if added + updated + forced + removed + deselected else '  = ') + summary)
+            changed = added + updated + forced + removed + deselected
+            self.say(self.terminal.status(('  + ' if changed else '  = ') + summary,
+                                          'updated' if changed else 'unchanged'))
             self.rows.append((self.current, 'files', f'{added} added, {updated} updated, {same} unchanged'))
             if block:
                 if self.total_steps:
@@ -968,7 +1000,7 @@ class Lifecycle:
             self.say('agentkit install | update | models | doctor | uninstall | version | help')
             parser().print_help()
         elif cmd == 'install':
-            self.say('agentkit ' + self.version)
+            self.say(self.terminal.paint('agentkit ' + self.version, '1;36'))
             if self.terminal.color:
                 self.say(self.terminal.paint('( o.o )', '36'))
             self.requirements()
@@ -996,7 +1028,7 @@ class Lifecycle:
             self.terminal.table(('TARGET', 'ITEM', 'STATUS'), rows, self.say,
                                 target_column=0, status_column=2, group_by=0)
             if os.environ.get('AGENTKIT_BOOTSTRAP_ACTIVE') != '1':
-                self.say('Done. Run agentkit doctor to check the setup.')
+                self.say(self.terminal.status('Done. Run agentkit doctor to check the setup.', 'ok'))
         elif cmd == 'update':
             if not (self.root / '.git').exists():
                 raise ValueError(str(self.root) + ' is not a git clone, cannot update')
@@ -1012,33 +1044,14 @@ class Lifecycle:
                 if branch.returncode or branch.stdout.strip() != 'main':
                     self.notify_update_failure()
                     raise ValueError('update requires the main branch; switch this checkout to main, then retry')
-                self.say('[1/2] Downloading updates from origin/main ...')
-                try:
-                    # Override the clone's broad fetch refspec and disable tag
-                    # auto-following. Never fetch release/development branches.
-                    platforms.run(['git', '-C', str(self.root), 'fetch', '--no-tags', '--no-recurse-submodules',
-                                   'origin', 'refs/heads/main:refs/remotes/origin/main'],
-                                  capture_output=True, text=True, check=True)
-                    platforms.run(['git', '-C', str(self.root), 'merge', '--ff-only', '--no-stat',
-                                   'refs/remotes/origin/main'], capture_output=True, text=True, check=True)
-                except subprocess.CalledProcessError as error:
-                    self.notify_update_failure()
-                    raise ValueError('origin/main update failed: ' +
-                                     (error.stderr or error.stdout or 'Git failed').strip() +
-                                     '. Fix it by hand: cd ' + str(self.root) + ' && git status')
+                if self.args.apply_fetched_update:
+                    if self.checkout_revision() != self.args.apply_fetched_update:
+                        raise ValueError('checkout changed while fetching the update; retry agentkit update')
+                else:
+                    return self.fetch_update()
             else:
                 self.say('[dry-run] fetch only origin/main (no tags), then fast-forward main')
-            self.version = (self.root / 'VERSION').read_text(encoding='utf-8').strip()
-            self.say('[2/2] Applying agentkit ' + self.version + ' ...')
-            for target in self.targets():
-                self.current = target
-                if not (self.target / 'agentkit/manifest.json').exists():
-                    raise ValueError('agentkit is not installed in ' + str(self.target))
-                self.say('  Updating ' + self.terminal.target_label(target) + ' ...')
-                self.sync('update')
-                if target == 'claude':
-                    self.posix_integration('update')
-            self.say('Update complete: agentkit ' + self.version)
+            return self.apply_update()
         elif cmd == 'models':
             models.commit(self, models.configure(self))
         elif cmd == 'doctor':
@@ -1047,7 +1060,50 @@ class Lifecycle:
             self.uninstall()
         else:
             raise ValueError(cmd + ' is unsupported on native Windows; use install/update/models/doctor/uninstall or WSL for POSIX integrations')
-        if platforms.is_windows() and cmd in ('install', 'update'):
+        if platforms.is_windows() and cmd == 'install':
+            self.say('Native Windows: gstack, karpathy plugin, Bash hooks and auto-update integrations are not installed.')
+        return 0
+
+    def checkout_revision(self):
+        return platforms.run(['git', '-C', str(self.root), 'rev-parse', 'HEAD'],
+                             capture_output=True, text=True, check=True).stdout.strip()
+
+    def fetch_update(self) -> int:
+        self.say('[1/2] Downloading updates from origin/main ...')
+        before = self.checkout_revision()
+        try:
+            # Override the clone's broad fetch refspec and disable tag
+            # auto-following. Never fetch release/development branches.
+            platforms.run(['git', '-C', str(self.root), 'fetch', '--no-tags', '--no-recurse-submodules',
+                           'origin', 'refs/heads/main:refs/remotes/origin/main'],
+                          capture_output=True, text=True, check=True)
+            platforms.run(['git', '-C', str(self.root), 'merge', '--ff-only', '--no-stat',
+                           'refs/remotes/origin/main'], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as error:
+            self.notify_update_failure()
+            raise ValueError('origin/main update failed: ' +
+                             (error.stderr or error.stdout or 'Git failed').strip() +
+                             '. Fix it by hand: cd ' + str(self.root) + ' && git status')
+        after = self.checkout_revision()
+        if after == before and self.root == ROOT:
+            return self.apply_update()
+        # A fast-forward replaced files on disk, while this process still has
+        # the old installer imported. Run the fetched code with the same options.
+        return platforms.run([sys.executable, '-I', str(self.root / 'lib/agentkit.py'),
+                              *self.argv, '--apply-fetched-update', after]).returncode
+
+    def apply_update(self) -> int:
+        self.say('[2/2] Applying agentkit ' + self.version + ' ...')
+        for target in self.targets():
+            self.current = target
+            if not (self.target / 'agentkit/manifest.json').exists():
+                raise ValueError('agentkit is not installed in ' + str(self.target))
+            self.say('  Updating ' + self.terminal.target_label(target) + ' ...')
+            self.sync('update')
+            if target == 'claude':
+                self.posix_integration('update')
+        self.say('Update complete: agentkit ' + self.version)
+        if platforms.is_windows():
             self.say('Native Windows: gstack, karpathy plugin, Bash hooks and auto-update integrations are not installed.')
         return 0
 
@@ -1065,7 +1121,7 @@ def main(argv=None) -> int:
             value = argv[i + 1] if arg == '--target' and i + 1 < len(argv) else arg.split('=', 1)[1] if arg.startswith('--target=') else None
             if value is not None and value not in ('claude', 'codex', 'both'):
                 raise ValueError("--target: unknown value '" + value + "' (claude|codex|both)")
-        lifecycle = Lifecycle(parser().parse_args(argv))
+        lifecycle = Lifecycle(parser().parse_args(argv), argv)
         return lifecycle.execute()
     except KeyboardInterrupt:
         print('error: installation interrupted by the user; completed steps may remain. Review the installation and rerun when ready.', file=sys.stderr)

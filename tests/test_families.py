@@ -1,4 +1,5 @@
 """Contracts for the optional specialist-family catalog and role boundaries."""
+import io
 import json
 from pathlib import Path
 import re
@@ -11,7 +12,7 @@ AGENTS = ROOT / 'agents'
 
 import sys
 sys.path.insert(0, str(ROOT / 'lib'))
-from agentkit_core import selection
+from agentkit_core import selection, ui
 
 EXPECTED_FAMILIES = {
     'design': ['design-ux-research', 'design-ux-architecture'],
@@ -104,37 +105,34 @@ class FamilyCatalogTests(unittest.TestCase):
                 self.assertRegex(body, r'fake|fixture|stub|mock')
                 self.assertRegex(body, r'failure|edge case|negative')
 
-    def test_picker_can_select_multiple_nested_children_in_a_subset_roster(self):
+    def test_picker_shows_only_parent_and_restores_locked_family_children(self):
         available = ('backend', 'database', 'security', 'supervisor-plan',
                      'supervisor-review', 'tester', 'test-api', 'test-e2e')
         rules = (['supervisor-plan', 'supervisor-review'],
                  {'backend': ['database', 'security', 'tester']})
-        initial = selection.resolve(available, ('test-api', 'test-e2e'), rules)
-        answers = iter(['7', '8', ''])
-        lines = []
-        result = selection.choose(
-            'codex', available, initial, rules, lambda _prompt: next(answers),
-            lines.append, lambda _choice, _say: [],
-            families={'tester': ('test-api', 'test-e2e')},
-        )
+        initial = selection.resolve(available, ('test-api',), rules)
+        stream = io.StringIO()
+        keys = iter(['up', 'toggle', 'enter'])
+        result = selection.choose('codex', available, initial, rules, ui.Terminal(stream),
+                                  keys.__next__, families={'tester': ('test-api', 'test-e2e')})
         self.assertTrue({'test-api', 'test-e2e'} <= result.active)
-        self.assertIn('test-api', '\n'.join(lines))
-        self.assertIn('test-e2e', '\n'.join(lines))
+        self.assertIn('partially selected', stream.getvalue())
+        self.assertIn('locked: required by backend', stream.getvalue())
+        self.assertNotIn('test-api', stream.getvalue())
+        self.assertNotIn('test-e2e', stream.getvalue())
 
-    def test_picker_parent_selects_family_then_allows_one_child_to_be_deselected(self):
-        available = ('design', 'design-ux-research', 'design-ux-architecture', 'backend')
+    def test_picker_toggles_entire_optional_family(self):
+        names = ('design', 'design-ux-research', 'design-ux-architecture', 'backend')
+        families = {'design': ('design-ux-research', 'design-ux-architecture')}
         rules = ([], {})
-        choice = selection.resolve(
-            available, ('design', 'design-ux-research', 'design-ux-architecture'), rules,
-        )
-        answers = iter(['1', '2', ''])
-        result = selection.choose(
-            'claude', available, choice, rules, lambda _prompt: next(answers),
-            lambda _line: None, lambda _choice, _say: [],
-            families={'design': ('design-ux-research', 'design-ux-architecture')},
-        )
-        self.assertEqual(result.active, {'design', 'design-ux-architecture', 'backend'})
-        self.assertEqual(result.excluded, {'design-ux-research'})
+        original = selection.resolve(names, (), rules)
+        for turns, expected in ((['toggle', 'enter'], {'backend'}),
+                                (['toggle', 'toggle', 'enter'], set(names))):
+            with self.subTest(turns=turns):
+                keys = iter(turns)
+                result = selection.choose('claude', names, original, rules, ui.Terminal(io.StringIO()),
+                                          keys.__next__, families=families)
+                self.assertEqual(result.active, expected)
 
     def test_saved_child_exclusions_survive_update_and_legacy_parent_exclusion(self):
         families = {'tester': ('test-api', 'test-e2e')}

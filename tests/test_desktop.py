@@ -25,6 +25,14 @@ class DesktopTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_windows_checklist_reads_arrow_and_confirmation_keys(self):
+        msvcrt = mock.Mock()
+        msvcrt.getwch.side_effect = ['\xe0', 'H', '\x00', 'P', ' ', '\r', '\x1b', '\x1a']
+        with mock.patch.object(platforms, 'is_windows', return_value=True), \
+             mock.patch.dict(sys.modules, {'msvcrt': msvcrt}), desktop.menu_keys(None) as read:
+            self.assertEqual([read() for _ in range(6)],
+                             ['up', 'down', 'toggle', 'enter', 'cancel', 'eof'])
+
     def bundle(self, name, identity, root=None):
         bundle = (root or self.home / 'Applications') / (name + '.app')
         (bundle / 'Contents/MacOS').mkdir(parents=True)

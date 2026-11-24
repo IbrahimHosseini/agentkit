@@ -196,6 +196,64 @@ def read_answer(stream, prompt: str) -> str:
     return value
 
 
+@contextlib.contextmanager
+def menu_keys(stream):
+    """Read checklist keys and restore the terminal before line prompts resume."""
+    if platforms.is_windows():
+        import msvcrt
+
+        def read():
+            char = msvcrt.getwch()
+            if char in ('\x00', '\xe0'):
+                return {'H': 'up', 'P': 'down'}.get(msvcrt.getwch(), '')
+            if char == '\x03':
+                raise KeyboardInterrupt
+            return _menu_key(char)
+
+        yield read
+        return
+
+    import select
+    import termios
+    import tty
+
+    fd = stream.fileno()
+    original = termios.tcgetattr(fd)
+
+    def read():
+        char = os.read(fd, 1)
+        if char != b'\x1b':
+            return _menu_key(char.decode('ascii', errors='replace'))
+        if not select.select([fd], [], [], 0.08)[0]:
+            return 'cancel'
+        prefix = os.read(fd, 1)
+        if prefix not in (b'[', b'O'):
+            return 'cancel'
+        sequence = b''
+        while len(sequence) < 16 and select.select([fd], [], [], 0.08)[0]:
+            byte = os.read(fd, 1)
+            if not byte:
+                return 'eof'
+            sequence += byte
+            if 0x40 <= byte[0] <= 0x7e:
+                return {b'A': 'up', b'B': 'down'}.get(sequence, '')
+        return ''
+
+    try:
+        tty.setcbreak(fd, termios.TCSANOW)
+    except termios.error as exc:
+        raise ValueError(f'cannot use keyboard selection on this terminal: {exc}') from exc
+    try:
+        yield read
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, original)
+
+
+def _menu_key(char):
+    return {' ': 'toggle', '\r': 'enter', '\n': 'enter', '\x1b': 'cancel',
+            '\x04': 'eof', '\x1a': 'eof', '': 'eof'}.get(char, '')
+
+
 def discover(home: Optional[Path] = None) -> Dict[str, App]:
     home = home or platforms.user_home()
     if sys.platform == 'darwin':

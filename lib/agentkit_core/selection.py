@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Set, Tuple
 
 from .managed import digest, linked_parent
+from .ui import ChoiceRow
 
 FIELD = 'excluded_agents'
 FAMILY_VERSION_FIELD = 'family_selection_version'
@@ -150,67 +151,51 @@ def removal_status(path: Path, home: Path, expected_hash: str) -> str:
     return 'owned'
 
 
-def summary(available: Iterable[str], choice: Selection, say) -> None:
+def summary(available: Iterable[str], choice: Selection, say, *, families=None) -> None:
     names = set(available)
-    say('Selected agents: ' + ', '.join(sorted(choice.active)))
-    say('Excluded agents: ' + (', '.join(sorted(names - choice.active)) or 'none'))
-    for role in sorted(choice.excluded & choice.active):
+    specialists = {child for children in (families or {}).values() for child in children}
+    visible = names - specialists
+    say('Selected agents: ' + ', '.join(sorted(choice.active & visible)))
+    say('Excluded agents: ' + (', '.join(sorted(visible - choice.active)) or 'none'))
+    for role in sorted(choice.excluded & choice.active & visible):
         say(f'  {role}: selected ({choice.locks[role]}); saved exclusion retained')
 
 
-def choose(target: str, available: Tuple[str, ...], choice: Selection, rules, read, say, preview, *, families=None) -> Selection:
-    families = families or {}
-    families = {parent: tuple(child for child in children if child in available)
-                for parent, children in families.items() if parent in available}
-    grouped = {child for children in families.values() for child in children}
-    options = []
-    for role in available:
-        if role not in grouped:
-            options.append((role, False))
-            options.extend((child, True) for child in families.get(role, ()))
-    while True:
-        say(f'Select agents for {target.capitalize()}')
-        for index, (role, child) in enumerate(options, 1):
-            mark = 'x' if role in choice.active else ' '
-            reason = f' (locked: {choice.locks[role]})' if role in choice.locks else ''
-            indent = '      ' if child else '  '
-            children = families.get(role, ())
-            label = ''
+def choose(target: str, available: Tuple[str, ...], choice: Selection, rules,
+           terminal, read_key, *, families=None) -> Selection:
+    names = set(available)
+    families = {parent: set(children) & names for parent, children in (families or {}).items()
+                if parent in names}
+    specialists = {child for children in families.values() for child in children}
+    options = [role for role in available if role not in specialists]
+
+    def rows():
+        for role in options:
+            children = families.get(role, set())
+            members = children | {role}
+            active = members & choice.active
+            mark = 'x' if active == members else '-' if active else ' '
+            details = []
             if children:
-                if role in choice.locks:
-                    action = 'clear' if set(children) <= choice.active else 'select'
-                    label = f' ({action} optional children)'
-                else:
-                    label = ' (toggle family)'
-            say(f'{indent}{index:2}. [{mark}] {role}{label}{reason}')
-        summary(available, choice, say)
-        removals = preview(choice, say)
-        enter = 'confirm selected roles and removals' if removals else 'continue'
-        try:
-            answer = read(f'Role number to toggle, Enter to {enter}, or 0 to cancel: ').strip().lower()
-        except EOFError:
-            raise ValueError('agent selection cancelled (input ended)') from None
-        if not answer:
-            return choice
-        if answer in ('0', 'cancel', 'c'):
-            raise ValueError('agent selection cancelled')
-        if not answer.isascii() or not answer.isdecimal() or len(answer) > len(str(len(available))):
-            say('Enter a role number from the list.')
-            continue
-        index = int(answer)
-        if not 1 <= index <= len(available):
-            say('Enter a role number from the list.')
-            continue
-        role = options[index - 1][0]
-        children = set(families.get(role, ()))
+                details.append(f'{len(children)} agents')
+            if mark == '-':
+                details.append('partially selected')
+            if role in choice.locks:
+                details.append('locked: ' + choice.locks[role])
+            yield ChoiceRow(role, mark, ' · '.join(details), target)
+
+    def toggle(index):
+        nonlocal choice
+        role = options[index]
+        children = families.get(role, set())
         if role in choice.locks and not children:
-            say(f'{role} is locked ({choice.locks[role]}).')
-            continue
-        if role in choice.locks:
-            excluded = (choice.excluded | children if children <= choice.active
-                        else choice.excluded - children)
-        else:
-            group = children | {role}
-            excluded = (choice.excluded | group if role in choice.active
-                        else choice.excluded - group)
+            return f'{role} is locked ({choice.locks[role]}).'
+        members = children if role in choice.locks else children | {role}
+        excluded = choice.excluded | members if members <= choice.active else choice.excluded - members
         choice = resolve(available, excluded, rules)
+        return ''
+
+    if not terminal.checklist('Agents — ' + target.capitalize(), read_key,
+                              lambda: list(rows()), toggle):
+        raise ValueError('agent selection cancelled')
+    return choice

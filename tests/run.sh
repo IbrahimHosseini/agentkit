@@ -222,7 +222,6 @@ run_pty_answers() {
 import json
 import os
 import pty
-import re
 import select
 import signal
 import sys
@@ -250,15 +249,9 @@ while True:
         pending += chunk
         prompt, response = answers[0]
         if prompt in pending:
-            menu, pending = pending.split(prompt, 1)
-            if response.startswith(b'role='):
-                role = response[len(b'role='):]
-                match = re.search(rb'(?m)^[ \t]*(\d+)\. \[[ x]\] ' + re.escape(role) + rb'(?=\s|$)', menu)
-                if not match:
-                    os.killpg(pid, signal.SIGTERM)
-                    sys.exit('Role missing from the displayed picker: ' + role.decode())
-                response = match.group(1)
-            os.write(fd, response + b'\n')
+            pending = pending.split(prompt, 1)[1]
+            keys = response[len(b'keys='):] if response.startswith(b'keys=') else response + b'\n'
+            os.write(fd, keys)
             answers.pop(0)
 _, status = os.waitpid(pid, 0)
 if answers:
@@ -2079,16 +2072,9 @@ t_piped_install_and_update_setting_prompts() {
   mk_desktop claude
   mk_desktop codex
   run_pty_answers '[
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=writing"],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", ""],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=design"],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=frontend"],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=design"],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=mobile"],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=design"],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=frontend"],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", "role=frontend"],
-    ["Role number to toggle, Enter to continue, or 0 to cancel:", ""],
+    ["Providers", "keys=\r"],
+    ["Agents — Claude", "keys=\u001b[A \r"],
+    ["Agents — Codex", "keys=\u001b[A\u001b[A \r"],
     ["CLAUDE.md? [y/N]", "y"], ["config.toml? [y/N]", "n"], ["AGENTS.md? [y/N]", "n"]]' \
     bash -c 'cat "$1" | bash -s -- --skip gstack --skip karpathy --skip hooks' _ "$AKH/install.sh"
   assert_rc 0 "piped install asks on controlling terminal"
@@ -2099,11 +2085,13 @@ t_piped_install_and_update_setting_prompts() {
   assert_file "$CODEX/agents/backend.toml"
   assert_file "$CODEX/agents/tester.toml"
   assert_file "$CODEX/agents/writing.toml"
-  assert_nofile "$CODEX/agents/design.toml"
-  assert_nofile "$CODEX/agents/frontend.toml"
-  assert_nofile "$CODEX/agents/mobile.toml"
-  assert_match 'design.*[Rr]equired by.*frontend.*mobile' 'shared dependency shows both parents'
-  assert_match 'design.*[Rr]equired by.*mobile' 'shared dependency stays locked after frontend is excluded'
+  assert_file "$CODEX/agents/design.toml"
+  assert_file "$CODEX/agents/frontend.toml"
+  assert_file "$CODEX/agents/mobile.toml"
+  assert_file "$CODEX/agents/test-api.toml"
+  assert_nofile "$CODEX/agents/workflow-optimizer.toml"
+  assert_contains "Space Toggle"
+  assert_contains "locked:"
   assert_nofile "$CODEX/config.toml"
   assert_nofile "$CODEX/AGENTS.md"
   assert_contains "AGENTS.md: skipped"
@@ -2122,10 +2110,37 @@ t_piped_install_and_update_setting_prompts() {
   assert_grep "$CODEX/AGENTS.md" "<!-- agentkit:start -->"
 }
 
+t_install_key_menu_selects_provider_and_family() {
+  setup_home
+  mk_codex
+  mk_desktop codex
+  export TERM=xterm-256color
+  run_pty_answers '[
+    ["Providers", "keys= \u001b[B\r"],
+    ["Agents — Codex", "keys=\u001b[B\u001b[B\u001b[B\u001b[B\u001b[B\u001b[B\u001b[B\u001b[B \r"],
+    ["Do you want to change these models or effort levels? [y/N]", "n"],
+    ["config.toml? [y/N]", "y"], ["AGENTS.md? [y/N]", "y"]]' \
+    "$AK" install --skip gstack --skip karpathy --skip hooks
+  assert_rc 0 "keyboard installation"
+  assert_match 'marketing.*10 agents' 'family is one selectable row'
+  assert_not_contains 'marketing-email'
+  assert_nofile "$CODEX/agents/marketing.toml"
+  assert_nofile "$CODEX/agents/marketing-email.toml"
+  assert_file "$CODEX/agents/test-api.toml"
+  assert_nofile "$CLAUDE"
+  has_esc "$OUT" || fail 'interactive installation did not use color'
+
+  export NO_COLOR=1
+  run_pty_answers '[["Providers", "keys=\u001b"]]' "$AK" install --skip gstack --skip karpathy
+  assert_rc_nz "Esc cancels provider selection"
+  assert_contains 'provider selection cancelled'
+  if has_esc "$OUT"; then fail 'NO_COLOR interactive output contains escape sequences'; fi
+}
+
 t_piped_agent_selection_cancel_prevents_install() {
   setup_home
   mk_codex
-  run_pty_answers '[["Role number to toggle, Enter to continue, or 0 to cancel:", "0"]]' \
+  run_pty_answers '[["Agents — Codex", "keys=\u001b"]]' \
     bash -c 'cat "$1" | bash -s -- --target codex --skip gstack --skip karpathy --skip hooks' _ "$AKH/install.sh"
   assert_rc_nz "cancelling agent selection stops the bootstrap"
   assert_nofile "$CODEX"
@@ -2517,7 +2532,7 @@ t_requirements_auto_handles_desktop_without_cli() {
   # Some sandboxes allow reading from /dev/tty but block opening it for shell output.
   # Stub only the package-manager confirmation, leaving workflow prompts on the terminal.
   printf '\nreq_tty() { return 0; }\nreq_ask() { return 1; }\n' >> "$AKH/lib/requirements.sh"
-  run_pty_answers '[["Role number to toggle, Enter to continue, or 0 to cancel:", ""], ["CLAUDE.md? [y/N]", "y"]]' \
+  run_pty_answers '[["Providers", "keys=\r"], ["Agents — Claude", "keys=\r"], ["CLAUDE.md? [y/N]", "y"]]' \
     bash -c 'exec "$1" install --skip gstack --skip karpathy --skip hooks </dev/null' _ "$AK"
   assert_rc 0 "declining the Codex prerequisite leaves Claude installable"
   assert_contains "codex installation declined"
@@ -2825,6 +2840,7 @@ t_codex_config_agent_conflict
 t_codex_foreign_agent_file
 t_codex_config_declined
 t_piped_install_and_update_setting_prompts
+t_install_key_menu_selects_provider_and_family
 t_piped_agent_selection_cancel_prevents_install
 t_update_repairs_custom_workflow
 t_codex_config_unusable
