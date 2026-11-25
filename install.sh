@@ -446,20 +446,7 @@ export AGENTKIT_HOME
 AGENTKIT_BOOTSTRAP_ACTIVE=1 "$AGENTKIT_HOME/bin/agentkit" install "$@" || exit $?
 
 # Link the CLI into ~/.local/bin. Ask before replacing anything that is not already our link.
-yes=0
-for a in "$@"; do
-  case "$a" in --yes | -y) yes=1 ;; esac
-done
-confirm() {
-  local ans
-  [ "$yes" = 1 ] && return 0
-  if { : < /dev/tty; } 2> /dev/null; then
-    printf '%s [y/N] ' "$1" > /dev/tty
-    read -r ans < /dev/tty
-    case "$ans" in y | Y | yes | YES) return 0 ;; esac
-  fi
-  return 1
-}
+confirm() { [ "$YES" = 1 ] || req_ask "$1"; }
 link="$HOME/.local/bin/agentkit"
 want="${real_home:-$AGENTKIT_HOME}/bin/agentkit"
 if [ -L "$link" ] && [ "$(readlink "$link")" = "$want" ]; then
@@ -478,6 +465,7 @@ elif [ -e "$link" ] || [ -L "$link" ]; then
     [ "$QUIET" = 1 ] || echo "Linked $link"
   else
     echo "warning: left $link as it is (it is $what). The CLI is at $want" >&2
+    exit 0
   fi
 elif [ "$DRY" = 1 ]; then
   echo "[dry-run] ln -s $want $link"
@@ -485,10 +473,67 @@ else
   mkdir -p "$HOME/.local/bin" && ln -s "$want" "$link" || die "launcher creation failed: $link; check directory permissions and retry"
   [ "$QUIET" = 1 ] || echo "Linked $link"
 fi
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
-  *) echo "warning: $HOME/.local/bin is not on your PATH. Add this to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2 ;;
-esac
 
-[ "$QUIET" = 1 ] || echo "Done. Run agentkit doctor to check the setup."
+# The bootstrap's PATH applies only to this process. Set up future interactive shells separately.
+setup_launcher_path() {
+  local profile login_profile shell_name="${SHELL:-}" path_status=0
+  local marker='# agentkit: launcher PATH'
+  local profiles pending=()
+  case "${shell_name##*/}" in
+    zsh) profiles=("${ZDOTDIR:-$HOME}/.zshrc") ;;
+    bash)
+      login_profile="$HOME/.profile"
+      for profile in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+        if [ -f "$profile" ] && [ -r "$profile" ]; then
+          login_profile="$profile"
+          break
+        fi
+      done
+      profiles=("$HOME/.bashrc" "$login_profile")
+      ;;
+    *) printf 'warning: Shell PATH setup skipped for %s. Add %s to PATH in your shell settings if needed.\n' "${SHELL:-an unidentified shell}" "$HOME/.local/bin" >&2; return 1 ;;
+  esac
+
+  for profile in "${profiles[@]}"; do
+    if [ -f "$profile" ] && [ -r "$profile" ] && grep -Fqx -- "$marker" "$profile"; then
+      continue
+    fi
+    if [ -L "$profile" ] || { [ -e "$profile" ] && { [ ! -f "$profile" ] || [ ! -r "$profile" ]; }; }; then
+      printf 'warning: Shell PATH setup skipped for %s. Update this shell profile manually.\n' "$profile" >&2
+      path_status=1
+    else
+      pending+=("$profile")
+    fi
+  done
+
+  [ "${#pending[@]}" -ne 0 ] || return "$path_status"
+  if [ "$DRY" = 1 ]; then
+    printf '[dry-run] Would add agentkit to PATH in %s\n' "${pending[@]}"
+  elif confirm "Add agentkit to PATH in ${pending[*]} for new terminals?"; then
+    for profile in "${pending[@]}"; do
+      if printf '\n%s\n%s\n' "$marker" \
+        'if [ -x "$HOME/.local/bin/agentkit" ]; then
+  case ":${PATH:-}:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="$HOME/.local/bin${PATH:+:$PATH}" ;;
+  esac
+fi' >> "$profile"; then
+        [ "$QUIET" = 1 ] || printf 'Configured PATH in %s\n' "$profile"
+      else
+        printf 'warning: Could not update %s. Add %s to PATH in your shell settings.\n' "$profile" "$HOME/.local/bin" >&2
+        path_status=1
+      fi
+    done
+  else
+    printf 'warning: Shell PATH setup skipped. Add %s to PATH in your shell settings if needed.\n' "$HOME/.local/bin" >&2
+    path_status=1
+  fi
+  return "$path_status"
+}
+
+if setup_launcher_path; then
+  [ "$DRY" = 1 ] || [ "$QUIET" = 1 ] || echo "Done. Open a new terminal, then run agentkit doctor."
+elif [ "$DRY" = 0 ]; then
+  printf 'The launcher is available at "%s". Run it with doctor to check the setup.\n' "$link" >&2
+fi
 exit 0

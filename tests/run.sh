@@ -28,8 +28,8 @@ trap cleanup EXIT
 mkdir -p "$REALBIN"
 PY="$(python3 -I -c 'import sys; print(sys.executable)')" || { echo "python3 is required" >&2; exit 2; }
 ln -s "$PY" "$REALBIN/python3"
-for tool in bash sh git env awk sed grep find sort tail head cat cp mv rm mkdir mktemp date wc tr cut readlink \
-  dirname basename shasum sha256sum ls ln chmod uname nohup rmdir diff cmp touch sleep id xargs tee pgrep tar dd; do
+for tool in bash zsh sh git env awk sed grep find sort tail head cat cp mv rm mkdir mktemp date wc tr cut readlink \
+  dirname basename shasum sha256sum ls ln chmod uname nohup rmdir diff cmp touch sleep id xargs tee pgrep tar dd locale; do
   p="$(command -v "$tool" 2> /dev/null)"
   case "$p" in /*) ln -sf "$p" "$REALBIN/$tool" ;; esac
 done
@@ -53,7 +53,7 @@ new_env() { # T
   export HOME="$T/home" TMPDIR="$T/tmp" AGENT_LOG_DIR="$T/agent-log" PATH="$T/stubs:$REALBIN"
   export AGENTKIT_REPO="$T/origin.git" STUB_LOG="$T/stub.log"
   export CODEX_HOME="$HOME/.codex" LC_ALL=C AGENTKIT_APPLICATION_DIRS="$HOME/Applications"
-  unset CLAUDE_CONFIG_DIR AGENTKIT_HOME AGENTKIT_UPDATE_INTERVAL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE STUB_PLUGIN_LIST STUB_GH_FAIL_LABEL
+  unset CLAUDE_CONFIG_DIR AGENTKIT_HOME AGENTKIT_UPDATE_INTERVAL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE STUB_PLUGIN_LIST STUB_GH_FAIL_LABEL ZDOTDIR
   unset NO_COLOR LANG LC_CTYPE AGENTKIT_REQS_OK STUB_CURL_LOG
   mkdir -p "$HOME" "$TMPDIR" "$T/work" "$T/stubs"
   # A silent claude, so the requirements check passes. Tests that need no claude remove it.
@@ -387,6 +387,70 @@ t_install_idempotent() {
   assert_eq "$(n_src "$CLAUDE/settings.json" SubagentStop agentkit-agent-log)" 1 "agentkit entries after two installs"
   assert_eq "$(jval "$CLAUDE/settings.json" "len(d['hooks']['SubagentStop'])")" 1 "SubagentStop groups"
   assert_eq "$(count_of "$CLAUDE/CLAUDE.md" '<!-- agentkit:start -->')" 1 "start markers after two installs"
+}
+
+t_install_launcher_path_zsh() {
+  local zsh
+  zsh="$(command -v zsh)" || return 0
+  setup_home
+  export SHELL="$zsh" ZDOTDIR="$HOME/zsh config"
+  mkdir -p "$ZDOTDIR"
+  printf '%s' '# Existing zsh settings' > "$ZDOTDIR/.zshrc"
+
+  # An installer that inherits the directory on PATH must still handle a fresh shell.
+  PATH="$HOME/.local/bin:$PATH" install_user
+  assert_rc 0 "bootstrap with a temporary PATH"
+  run "$zsh" -lic 'command -v agentkit && agentkit models --target claude --agent backend --yes'
+  assert_rc 0 "models from a fresh zsh login shell"
+  assert_contains "$HOME/.local/bin/agentkit"
+  assert_contains 'Model settings kept.'
+  run "$zsh" -ic 'command -v agentkit'
+  assert_eq "$OUT" "$HOME/.local/bin/agentkit" "interactive non-login zsh"
+  assert_grep "$ZDOTDIR/.zshrc" '# Existing zsh settings'
+  cp "$ZDOTDIR/.zshrc" "$T/before"
+  install_user
+  assert_rc 0 "repeat install"
+  assert_same "$ZDOTDIR/.zshrc" "$T/before"
+  rm "$HOME/.local/bin/agentkit"
+  run "$zsh" -ic 'case ":$PATH:" in *":$HOME/.local/bin:"*) exit 1 ;; esac'
+  assert_rc 0 "profile leaves PATH alone after launcher removal"
+
+  printf '%s\n' '# Linked zsh settings' > "$T/managed-zshrc"
+  rm "$ZDOTDIR/.zshrc"
+  ln -s "$T/managed-zshrc" "$ZDOTDIR/.zshrc"
+  install_user
+  assert_rc 0 "install with a linked profile"
+  assert_contains 'Update this shell profile manually'
+  assert_eq "$(cat "$T/managed-zshrc")" '# Linked zsh settings' "linked profile remains intact"
+}
+
+t_install_launcher_path_bash() {
+  setup_home
+  export SHELL=/bin/bash
+  printf '%s' 'export AGENTKIT_TEST_PROFILE=seen' > "$HOME/.bash_profile"
+  printf '%s\n' '# Existing Bash settings' > "$HOME/.profile"
+
+  run bash "$AKH/install.sh" --dry-run --yes --skip gstack --skip karpathy
+  assert_rc 0 "preview PATH setup"
+  assert_contains "[dry-run] Would add agentkit to PATH in $HOME/.bash_profile"
+  assert_nofile "$HOME/.bashrc"
+  assert_eq "$(cat "$HOME/.bash_profile")" 'export AGENTKIT_TEST_PROFILE=seen' "login profile after preview"
+
+  run bash "$AKH/install.sh" --skip gstack --skip karpathy
+  assert_rc 0 "install without PATH consent"
+  assert_contains 'Shell PATH setup skipped'
+  assert_nofile "$HOME/.bashrc"
+  assert_eq "$(cat "$HOME/.bash_profile")" 'export AGENTKIT_TEST_PROFILE=seen' "login profile without consent"
+
+  install_user
+  assert_rc 0 "approved Bash PATH setup"
+  run bash -lic 'test "$AGENTKIT_TEST_PROFILE" = seen && command -v agentkit && agentkit models --target claude --agent backend --yes'
+  assert_rc 0 "models from a fresh Bash login shell"
+  assert_contains "$HOME/.local/bin/agentkit"
+  assert_contains 'Model settings kept.'
+  run bash -ic 'test "$(command -v agentkit)" = "$HOME/.local/bin/agentkit"'
+  assert_rc 0 "interactive non-login Bash"
+  assert_eq "$(cat "$HOME/.profile")" '# Existing Bash settings' "lower-priority login profile"
 }
 
 t_install_foreign_files() {
@@ -959,7 +1023,7 @@ t_dependency_stubs() {
   assert_rc_nz "accepted gstack requires bun"
   assert_contains "gstack: required Bun installation failed or was declined"
   assert_contains "Installation incomplete"
-  assert_not_contains "Done. Run agentkit doctor"
+  assert_not_contains "Done. Open a new terminal"
   assert_nofile "$CLAUDE/skills/gstack"
   # gstack: declined.
   run bash "$AKH/install.sh" --skip karpathy
@@ -1008,7 +1072,7 @@ t_bad_settings_untouched() {
   printf '{not json' > "$CLAUDE/settings.json"
   install_user
   assert_rc_nz "invalid settings.json cannot produce complete install"
-  assert_not_contains "Done. Run agentkit doctor"
+  assert_not_contains "Done. Open a new terminal"
   assert_contains "cannot read"
   assert_eq "$(cat "$CLAUDE/settings.json")" "{not json" "invalid settings.json must stay as it was"
   assert_same "$AKH/agents/backend.md" "$CLAUDE/agents/backend.md"
@@ -2068,6 +2132,7 @@ t_codex_config_declined() {
 
 t_piped_install_and_update_setting_prompts() {
   setup_home
+  export SHELL=/bin/bash
   mk_codex
   mk_desktop claude
   mk_desktop codex
@@ -2075,9 +2140,12 @@ t_piped_install_and_update_setting_prompts() {
     ["Providers", "keys=\r"],
     ["Agents — Claude", "keys=\u001b[A \r"],
     ["Agents — Codex", "keys=\u001b[A\u001b[A \r"],
-    ["CLAUDE.md? [y/N]", "y"], ["config.toml? [y/N]", "n"], ["AGENTS.md? [y/N]", "n"]]' \
+    ["CLAUDE.md? [y/N]", "y"], ["config.toml? [y/N]", "n"], ["AGENTS.md? [y/N]", "n"],
+    ["for new terminals? [y/N]", "y"]]' \
     bash -c 'cat "$1" | bash -s -- --skip gstack --skip karpathy --skip hooks' _ "$AKH/install.sh"
   assert_rc 0 "piped install asks on controlling terminal"
+  assert_contains 'Add agentkit to PATH'
+  assert_file "$HOME/.bashrc"
   assert_grep "$CLAUDE/CLAUDE.md" "<!-- agentkit:start -->"
   assert_nofile "$CLAUDE/agents/writing.md"
   assert_file "$CLAUDE/agents/design.md"
@@ -2507,7 +2575,7 @@ t_requirements_target_both() {
   assert_nofile "$T/brew.log"
   assert_nofile "$T/stubs/codex"
   assert_contains "Installation incomplete"
-  assert_not_contains "Done. Run agentkit doctor"
+  assert_not_contains "Done. Open a new terminal"
   assert_contains "No TTY: not running a remote script"
   assert_nofile "$T/curl.log"
   assert_match '^  x claude +not found, required' "claude row"
@@ -2560,6 +2628,7 @@ t_requirements_auto_handles_desktop_without_cli() {
 
 t_requirements_install_sh_target_and_quiet() {
   setup_home
+  export SHELL=/bin/bash
   rm -f "$T/stubs/claude"
   mk_brew; mk_curl
   # install.sh reads --target / --target= for the requirements and passes it on.
@@ -2779,6 +2848,8 @@ t_dry_run_writes_nothing
 t_no_temp_files_left
 t_install_yes
 t_install_idempotent
+t_install_launcher_path_zsh
+t_install_launcher_path_bash
 t_install_foreign_files
 t_update_merge
 t_update_not_fast_forward

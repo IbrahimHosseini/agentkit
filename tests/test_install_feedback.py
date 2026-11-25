@@ -114,6 +114,7 @@ class InstallFeedbackTests(unittest.TestCase):
                   'if [ "$1" = -C ] && [ "$2" = "$HOME/.agentkit" ] && [ "$3" = pull ]; then echo correct-checkout; exit 0; fi; '
                   'echo "unexpected Git arguments: $*" >&2; exit 19')
         self.env.pop('AGENTKIT_HOME', None)
+        self.env['ZDOTDIR'] = str(self.home)
         result = subprocess.run(['bash', '-s', '--', '--yes'], input=(ROOT / 'install.sh').read_text(), env=self.env, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('correct-checkout', result.stdout)
