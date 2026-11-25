@@ -399,6 +399,9 @@ check_requirements() {
 }
 # <<< agentkit:requirements
 
+# With curl | bash, stdin carries this script. Parse the entire installation
+# before starting any child that might read stdin and consume the remaining steps.
+{
 # Check git, python3 and an agent CLI before cloning (the clone needs git).
 export DRY YES QUIET REQ_WANT
 REQ_BOOTSTRAP=1 check_requirements install || die "bootstrap requirements are not met"
@@ -537,3 +540,4 @@ elif [ "$DRY" = 0 ]; then
   printf 'The launcher is available at "%s". Run it with doctor to check the setup.\n' "$link" >&2
 fi
 exit 0
+}

@@ -108,17 +108,22 @@ class InstallFeedbackTests(unittest.TestCase):
         (checkout / '.git').mkdir(parents=True)
         (checkout / 'bin').mkdir()
         entry = checkout / 'bin/agentkit'
-        entry.write_text('#!/bin/sh\nexit 0\n')
+        # A child installer may read stdin until EOF during `curl ... | bash`.
+        entry.write_text('#!/bin/sh\nif [ "$1" = install ]; then cat > "$HOME/child-stdin"; fi\n')
         entry.chmod(0o755)
         self.stub('git', 'if [ "$1" = --version ]; then echo "git version 2.54.0"; exit 0; fi; '
                   'if [ "$1" = -C ] && [ "$2" = "$HOME/.agentkit" ] && [ "$3" = pull ]; then echo correct-checkout; exit 0; fi; '
                   'echo "unexpected Git arguments: $*" >&2; exit 19')
         self.env.pop('AGENTKIT_HOME', None)
-        self.env['ZDOTDIR'] = str(self.home)
+        self.env['SHELL'] = '/bin/bash'
         result = subprocess.run(['bash', '-s', '--', '--yes'], input=(ROOT / 'install.sh').read_text(), env=self.env, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('correct-checkout', result.stdout)
+        self.assertEqual((self.home / 'child-stdin').read_bytes(), b'')
         self.assertTrue((self.home / '.local/bin/agentkit').is_symlink())
+        fresh_shell = subprocess.run(['bash', '--noprofile', '-ic', 'test "$(command -v agentkit)" = "$HOME/.local/bin/agentkit"'],
+                                     env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(fresh_shell.returncode, 0, fresh_shell.stderr)
 
     def test_required_cli_validation_cannot_be_bypassed(self):
         with mock.patch.dict(os.environ, dict(self.env, AGENTKIT_REQS_OK='1')), mock.patch.object(desktop, 'discover', return_value={'codex': desktop.App('ChatGPT', '/app')}):
