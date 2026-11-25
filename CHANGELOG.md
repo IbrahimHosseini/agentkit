@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-25
+
+### Fixed
+
+- Prevent `curl | bash` installations from silently skipping launcher creation and PATH setup when a child process reads from standard input. Rerun the installer and approve the PATH prompt to repair an affected installation.
+
 ## [0.10.2] - 2026-11-25
 
 ### Fixed
@@ -174,7 +180,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/IbrahimHosseini/agentkit/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/IbrahimHosseini/agentkit/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/IbrahimHosseini/agentkit/compare/v0.9.0...v0.10.1
 [0.9.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.8.0...v0.9.0
