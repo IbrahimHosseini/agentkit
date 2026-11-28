@@ -5,6 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-28
+
+### Changed
+
+- Plan independent testing for meaningful behavior changes, including single-file fixes, and require evidence during review. Schedule security review based on the risk of the change.
+- Install the `security` role when `frontend` or `mobile` is selected. Preserve saved specialist exclusions on update.
+- Plan design decisions before web or mobile implementation when needed. Schedule visual review after implementation when requested or required by acceptance criteria.
+- Keep the README focused on getting started. Move detailed installation, workflow, model, and maintenance instructions into dedicated guides.
+
 ## [0.10.3] - 2026-11-25
 
 ### Fixed
@@ -180,7 +189,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code plugin mode: `.claude-plugin/plugin.json` and `marketplace.json`. The agent log handles agent names with the `agentkit:` prefix.
 - `scripts/validate.sh`, `scripts/sync.sh` and a CI workflow for Ubuntu and macOS.
 
-[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/IbrahimHosseini/agentkit/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/IbrahimHosseini/agentkit/compare/v0.10.3...v0.11.0
 [0.10.3]: https://github.com/IbrahimHosseini/agentkit/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/IbrahimHosseini/agentkit/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/IbrahimHosseini/agentkit/compare/v0.9.0...v0.10.1

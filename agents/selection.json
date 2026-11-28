@@ -3,7 +3,7 @@
   "dependencies": {
     "backend": ["database", "security", "tester"],
     "devops": ["security"],
-    "frontend": ["design", "tester"],
-    "mobile": ["design", "tester"]
+    "frontend": ["design", "security", "tester"],
+    "mobile": ["design", "security", "tester"]
   }
 }

@@ -176,9 +176,9 @@ In the Providers and Agents checklists, use Up and Down to move, Space to toggle
 
 | Selected agent | Required agents |
 |---|---|
-| `frontend` | `design`, `tester` |
+| `frontend` | `design`, `security`, `tester` |
 | `backend` | `database`, `security`, `tester` |
-| `mobile` | `design`, `tester` |
+| `mobile` | `design`, `security`, `tester` |
 | `devops` | `security` |
 
 For example, to omit `frontend`, `mobile`, and their shared `design` dependency in a scripted Codex install, use:

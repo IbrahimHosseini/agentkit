@@ -7,29 +7,33 @@ The workflow block in CLAUDE.md or AGENTS.md tells the main session how to work 
 ```mermaid
 flowchart TD
     Task[Your task] --> Small{3 files or fewer, one area,<br/>no schema or auth change?}
-    Small -->|Yes| Direct[Main session does the task directly]
+    Small -->|Yes| Checks{Independent check or<br/>separate design assignment?}
     Small -->|No| Plan[supervisor-plan<br/>Split work into parts and waves]
+    Checks -->|No| Direct[Main session does the task directly]
+    Checks -->|Yes| Plan
     Plan --> Approval[You review the plan,<br/>skill choices, and any package installs]
     Approval -->|Changes requested| Plan
     Approval -->|Approved| Workers[Workers run in parallel waves<br/>Each file has one owner]
-    Workers --> Review[supervisor-review<br/>Check the task and worker reports]
+    Workers --> Verification[Run applicable tester and security checks<br/>and visual review after implementation]
+    Verification --> Review[supervisor-review<br/>Check task and evidence]
     Review --> Fix{Fixes needed?}
     Fix -->|No| Result[Main session reports the result,<br/>verdict, and open items]
     Fix -->|Yes| Limit{Two fix rounds<br/>already completed?}
     Limit -->|No| Owner[Responsible workers fix their parts]
-    Owner --> Review
+    Owner --> Verification
     Limit -->|Yes| Result
     Direct --> Result
 ```
 
-1. The `supervisor-plan` agent runs. It splits the task into parts and waves.
-2. The main session shows you the plan: the number of agents, the waves, and the work of each agent. You approve it or change it. If a part needs an install, you approve the packages.
-3. Workers run. Parts in the same wave run in parallel. Two parts never edit the same file.
-4. The `supervisor-review` agent runs. It checks the worker reports against the task.
-5. Each fix goes back to the worker that owns the part. A specialist's fix goes through its original parent to the same child role. `supervisor-review` runs again. The loop stops after 2 rounds.
-6. You get the result, the verdict, and anything that is still open.
+1. Any task outside the direct path uses `supervisor-plan` to split the work into parts and waves. This includes small tasks that need an independent check, such as a security-only review.
+2. Plan an independent tester before implementation for every meaningful web, backend, or mobile change to behavior, contract, data or state, or failure handling. Run the tester's planned checks after implementation. A copy-only change can go directly to the main session. A one-file mobile behavior fix still needs a tester.
+3. Plan a security review based on risk. Use it for changes to authentication, permissions, secrets, sensitive data, payments, untrusted input, trust boundaries, or risky dependencies and releases. The review is static and read-only. For example, a frontend session change needs both a tester and security review.
+4. The main session shows the plan: agent count, waves, assignments, and each check marked required, skipped with a reason, or unavailable with a reason. You approve or change it. If a part needs a skill choice or package install, the plan identifies it before work starts.
+5. Workers run. Parts in the same wave run in parallel. Two parts never edit the same file. After implementation, run applicable tester and security checks and any planned visual review. Run independent parts in parallel when possible, then run `supervisor-review`.
+6. `supervisor-review` compares the task, implementation, and evidence. Each fix goes to its owner. A specialist's fix goes through its original parent to the same child role. Rerun the affected checks and `supervisor-review`. Stop after 2 fix rounds.
+7. You get the result, the verdict, check evidence, and anything that is still open.
 
-`supervisor-plan` is skipped for small tasks: 3 files or fewer, one area, no schema or auth change.
+Use the direct path for a task with 3 files or fewer, in one area, with no schema or auth change, when it needs neither independent check nor a separate design assignment. A small behavioral task still uses the plan so the tester is assigned before implementation.
 
 Example prompt:
 
@@ -37,7 +41,17 @@ Example prompt:
 Add a "last login" column to the users table and show it on the admin page.
 ```
 
-`supervisor-plan` can split this into a database part (migration), a backend part (API field), a frontend part (column) and a tester part. The plan shows you this split before any worker starts.
+`supervisor-plan` can split this into a database part (migration), a backend part (API field), a frontend part (column), and an independent tester part. The tester is planned before implementation and runs after it. The plan shows you this split before any worker starts.
+
+The `tester` parent can run general regression checks itself. When a task needs specialist testing, it can assign an eligible family child: `test-api` for API contracts, `test-e2e` for user flows, `test-accessibility` for accessibility, or `test-performance` for performance. Use the project's existing test commands and fake local services. Test children edit only assigned test files.
+
+## UI design planning
+
+For each web or mobile UI part, the plan identifies the design the implementer will follow and whether a separate visual review is needed.
+
+- When an existing pattern or approved design covers the change, `frontend` or `mobile` follows it during implementation.
+- Schedule `design` before implementation when a material decision about layout, navigation, interactions, or a reusable component is open. Hand the implementer the layout, relevant states, interactions, and observable acceptance criteria.
+- Schedule `design` after implementation when a visual review is requested or acceptance depends on fidelity across specified layouts, platforms, or text directions. Approve a platform-appropriate option for each `design` assignment with the plan.
 
 ## Specialist families
 
@@ -53,6 +67,8 @@ After the main session approves a parent's assignment, the parent can handle the
 | `tester` | `test-accessibility`, `test-api`, `test-performance`, `test-e2e` |
 
 The interactive installer toggles specialists as a family. A family with saved individual exclusions appears partially selected. Use `--skip-agent` to exclude a specific specialist in a scripted install. When another role brings in the parent as a dependency, specialist choices stay as selected. The required roles and automatic install dependencies are listed in [selection.json](../agents/selection.json).
+
+Installation makes `security` available. The workflow schedules security review based on the risk of the change. Saved specialist exclusions remain in effect across updates.
 
 A child assignment names both roles, the objective, permitted files and tools, inherited permissions, and acceptance checks. Each permission must be allowed by the parent assignment and the child role. A parent or specialist can also take a self-contained direct assignment with an explicit objective, permitted files and tools, and acceptance checks. Specialists complete assignments themselves. Design requires the user's approved option, security stays defensive, static, and read-only, and test children edit only assigned test files and use local fakes. X research stays read-only. Sending or publishing requires explicit consent for the destination channel and account, content, and action.
 

@@ -22,7 +22,8 @@ Read the task and relevant files. Use the effective installed definitions suppli
 - Put parts that do not depend on each other in the same wave. Run as many parts in parallel as is safe.
 - For each part give: owner agent, goal, files in scope, what done looks like, dependencies.
 - End with a table: wave, part, agent. Give the number of agents and waves.
-- Choose the fewest agents that give a correct result. Do not split a small task.
+- Apply the workflow’s independent testing and security criteria to every implementation part before minimizing the number of agents. Name the expected evidence, implementation dependency, and reason for any skipped or unavailable check.
+- Consider `database` for data and migration changes, `payments` for billing flows, affected consumer roles for shared API changes, `design` for new interaction patterns, and `devops` for CI, migration rollout, or release recovery.
 
 - Use the installed definitions and the target-specific roster the main session or installed workflow supplies. Only design, seo, marketing, product, security, and tester can delegate to children from their own families. Assign the approved area to its parent and count potential specialists only when identified. Parents choose installed children after approval. Carry the applicable design option and permissions into the parent brief.
 
