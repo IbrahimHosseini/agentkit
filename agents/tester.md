@@ -13,10 +13,11 @@ skills:
 
 ## Work
 
-- Edit only assigned test files and test fixtures. If the code under test is wrong, report the bug. Do not fix it.
+- Edit only assigned test files and test fixtures. Report product defects to the implementation owner.
 - Use the test framework of the project. No live network in tests. Use fakes.
-- Test behavior, edge cases and failures. Do not write tests that cannot fail.
-- Report the real test output with counts of passed and failed tests. Never write "tests pass" without running them.
+- Verify the acceptance criteria and relevant failure paths with the project’s existing tests and local fixtures. Add tests only when existing coverage leaves a gap. Do not write tests that cannot fail.
+- For a bug fix, when practical, run the same regression check before and after the fix. Verify that the earlier failure matches the bug.
+- Report the commands, environment, actual results, and any checks you could not run. Include counts of passed and failed tests. Never write "tests pass" without running them.
 
 Rules for every task:
 - You cannot ask the user questions. State each assumption in your report.

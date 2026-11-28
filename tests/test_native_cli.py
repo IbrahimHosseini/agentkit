@@ -267,6 +267,112 @@ class NativeLifecycleTests(unittest.TestCase):
         self.assertEqual(manifest['excluded_agents'], ['writing'])
         self.cli('doctor', '--target', 'codex')
 
+    def test_update_adds_security_dependencies_without_restoring_excluded_family_children(self):
+        current_rules = json.loads((self.repo / 'agents/selection.json').read_text(encoding='utf-8'))
+        catalog = self.repo / 'agents/selection.json'
+        rules = json.loads(catalog.read_text(encoding='utf-8'))
+        rules['dependencies']['frontend'] = [name for name in rules['dependencies']['frontend']
+                                             if name != 'security']
+        rules['dependencies']['mobile'] = [name for name in rules['dependencies']['mobile']
+                                           if name != 'security']
+        catalog.write_text(json.dumps(rules), encoding='utf-8')
+        self.git_run('add', '--', 'agents/selection.json', cwd=self.repo)
+        self.git_run('commit', '-qm', 'Older selection without frontend and mobile security dependency', cwd=self.repo)
+        self.git_run('push', '-q', 'origin', 'HEAD:main', cwd=self.repo)
+        publisher = self.scratch / 'publisher'
+        self.git_run('clone', '-q', str(self.origin), str(publisher))
+        catalog = publisher / 'agents/selection.json'
+        rules = json.loads(catalog.read_text(encoding='utf-8'))
+        self.assertNotIn('security', rules['dependencies']['frontend'])
+        self.assertNotIn('security', rules['dependencies']['mobile'])
+
+        self.install('codex', '--skip-agent', 'backend', '--skip-agent', 'devops',
+                     '--skip-agent', 'mobile', '--skip-agent', 'security')
+        self.install('claude', '--skip-agent', 'backend', '--skip-agent', 'devops',
+                     '--skip-agent', 'frontend', '--skip-agent', 'security')
+        for target in (self.codex, self.claude):
+            manifest = json.loads((target / 'agentkit/manifest.json').read_text(encoding='utf-8'))
+            self.assertIn('security', manifest['excluded_agents'])
+            self.assertIn('security-appsec', manifest['excluded_agents'])
+            extension = 'toml' if target == self.codex else 'md'
+            self.assertFalse((target / f'agents/security.{extension}').exists())
+        self.assertTrue((self.codex / 'agents/frontend.toml').is_file())
+        self.assertTrue((self.claude / 'agents/mobile.md').is_file())
+
+        catalog.write_text(json.dumps(current_rules), encoding='utf-8')
+        self.git_run('commit', '-qam', 'Require security for frontend and mobile', cwd=publisher)
+        self.git_run('push', '-q', 'origin', 'HEAD:main', cwd=publisher)
+
+        self.cli('update', '--target', 'both')
+        for target, extension in ((self.codex, 'toml'), (self.claude, 'md')):
+            with self.subTest(target=target.name):
+                manifest = json.loads((target / 'agentkit/manifest.json').read_text(encoding='utf-8'))
+                self.assertIn('security', manifest['excluded_agents'])
+                self.assertIn('security-appsec', manifest['excluded_agents'])
+                self.assertTrue((target / f'agents/security.{extension}').is_file())
+                for child in ('security-ai-code', 'security-appsec', 'security-architecture',
+                              'security-compliance', 'security-credentials', 'security-threat-intel',
+                              'security-detection'):
+                    self.assertFalse((target / f'agents/{child}.{extension}').exists(), child)
+                self.assertFalse((target / f'agents/backend.{extension}').exists())
+                self.assertFalse((target / f'agents/devops.{extension}').exists())
+
+    def test_rendered_workflows_include_check_applicability_and_evidence_rules(self):
+        self.install('both')
+        for target, workflow in ((self.codex, 'AGENTS.md'), (self.claude, 'CLAUDE.md')):
+            with self.subTest(target=target.name):
+                prompt = (target / workflow).read_text(encoding='utf-8').lower()
+                self.assertIn('requires neither independent check', prompt)
+                independent = prompt.split('## independent verification', 1)[1].split('## family assignments', 1)[0]
+                self.assertIn('meaningful changes to observable behavior', independent)
+                self.assertIn('single-file fixes', independent)
+                self.assertIn('require a defensive, read-only `security` review', independent)
+                self.assertIn('authentication, authorization', independent)
+                self.assertIn('session handling', independent)
+                self.assertIn('for each implementation part', independent)
+                self.assertIn('required, skipped, or unavailable', independent)
+                self.assertIn('schedule required checks after implementation', independent)
+                self.assertIn('actual check results and open gaps', prompt)
+                self.assertIn('rerun the checks affected by the fix', prompt)
+                self.assertIn('fresh evidence', prompt)
+
+    def test_fresh_surface_role_installs_lock_security_on_both_hosts(self):
+        catalog = self.repo / 'agents'
+        available = {path.stem for path in catalog.glob('*.md')}
+        rules = json.loads((catalog / 'selection.json').read_text(encoding='utf-8'))
+        for target_name, surface in (('codex', 'frontend'), ('codex', 'mobile'),
+                                     ('claude', 'frontend'), ('claude', 'mobile')):
+            with self.subTest(target=target_name, surface=surface):
+                isolated_home = self.scratch / f'{target_name}-{surface}'
+                if target_name == 'codex':
+                    self.env['CODEX_HOME'] = str(isolated_home)
+                    target = isolated_home
+                    extension = 'toml'
+                else:
+                    self.env['CLAUDE_CONFIG_DIR'] = str(isolated_home)
+                    target = isolated_home
+                    extension = 'md'
+                allowed = set(rules['required']) | {surface}
+                pending = [surface]
+                while pending:
+                    for dependency in rules['dependencies'].get(pending.pop(), ()):
+                        if dependency not in allowed:
+                            allowed.add(dependency)
+                            pending.append(dependency)
+                excluded = sorted(available - allowed)
+                excluded_args = [arg for name in excluded for arg in ('--skip-agent', name)]
+                rejected = self.cli('install', '--target', target_name, '--yes', '--skip', 'gstack',
+                                    '--skip', 'karpathy', *excluded_args, '--skip-agent', 'security',
+                                    expected=1).stdout
+                self.assertIn(f'security (required by {surface})', rejected)
+
+                self.install(target_name, *excluded_args)
+                self.assertTrue((target / f'agents/{surface}.{extension}').is_file())
+                self.assertTrue((target / f'agents/security.{extension}').is_file())
+                self.assertFalse((target / f'agents/security-appsec.{extension}').exists())
+                self.assertFalse((target / f'agents/backend.{extension}').exists())
+                self.assertFalse((target / f'agents/devops.{extension}').exists())
+
     def test_family_subset_rosters_follow_installed_roles_on_both_hosts(self):
         excluded = ('design-ux-research', 'marketing-x-research', 'test-api')
         options = [arg for name in excluded for arg in ('--skip-agent', name)]

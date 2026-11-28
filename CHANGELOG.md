@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Plan independent testing for meaningful behavior changes and security review for sensitive changes. Schedule design work for web and mobile when decisions or visual review are needed. Selecting `frontend` or `mobile` now installs the `security` role.
+
 ## [0.10.3] - 2026-11-25
 
 ### Fixed
