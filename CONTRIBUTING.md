@@ -58,7 +58,7 @@ Rules:
 - Write in English. Use short, imperative sentences. One rule for each line.
 - Do not put personal paths in the file. `scripts/validate.sh` fails on them.
 - End the body with the shared "Rules for every task" block. Copy it from a worker agent such as `agents/backend.md`. Keep the wording the same. The agent-report skill and the hook rules depend on these sentences.
-- If you add or remove an agent, update the agent list in `templates/CLAUDE.md.snippet` and the table in `README.md`.
+- If you add or remove an agent, update the agent list in `templates/CLAUDE.md.snippet` and the agent catalog in [`docs/workflow.md`](docs/workflow.md#agents).
 
 ## Add a skill
 
